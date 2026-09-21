@@ -1,4 +1,6 @@
 /build/
+/gameboy
+/gameboy.exe
 
 *.o
 *.d
