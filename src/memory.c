@@ -1,26 +1,22 @@
 #include <stdint.h>
+#include <string.h>
 
 #include <memory.h>
 
 void memory_init(Memory *memory)
 {
-    for (int i = 0; i < 0x2000; i++) {
-        memory->wram[i] = 0;
-    }
-
-    for (int i = 0; i < 0x7F; i++) {
-        memory->hram[i] = 0;
-    }
+    memset(memory->wram, 0, sizeof(memory->wram));
+    memset(memory->hram, 0, sizeof(memory->hram));
 }
 
 uint8_t memory_read(const Memory *memory, uint16_t address)
 {
-    if (address >= 0xC000 && address <= 0xDFFF) {
-        return memory->wram[address - 0xC000];
+    if (address >= MEM_WRAM_START && address <= MEM_WRAM_END) {
+        return memory->wram[address - MEM_WRAM_START];
     }
 
-    if (address >= 0xFF80 && address <= 0xFFFE) {
-        return memory->hram[address - 0xFF80];
+    if (address >= MEM_HRAM_START && address <= MEM_HRAM_END) {
+        return memory->hram[address - MEM_HRAM_START];
     }
 
     return 0xFF;
@@ -28,12 +24,12 @@ uint8_t memory_read(const Memory *memory, uint16_t address)
 
 void memory_write(Memory *memory, uint16_t address, uint8_t value)
 {
-    if (address >= 0xC000 && address <= 0xDFFF) {
-        memory->wram[address - 0xC000] = value;
+    if (address >= MEM_WRAM_START && address <= MEM_WRAM_END) {
+        memory->wram[address - MEM_WRAM_START] = value;
         return;
     }
 
-    if (address >= 0xFF80 && address <= 0xFFFE) {
-        memory->hram[address - 0xFF80] = value;
+    if (address >= MEM_HRAM_START && address <= MEM_HRAM_END) {
+        memory->hram[address - MEM_HRAM_START] = value;
     }
 }

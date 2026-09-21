@@ -1,6 +1,6 @@
 #include <timer.h>
 
-#include <bus.h>
+#include <interrupts.h>
 
 enum {
     TIMER_RELOAD_DELAY_CYCLES = 4
@@ -72,7 +72,7 @@ static void timer_advance_reload(Timer *timer)
 
     if (timer->reload_delay == 0) {
         timer->tima = timer->tma;
-        timer->interrupts->interrupt_flag |= INTERRUPT_TIMER;
+        interrupts_request(timer->interrupts, INTERRUPT_TIMER);
         timer->reload_pending = false;
     }
 }

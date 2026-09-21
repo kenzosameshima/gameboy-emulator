@@ -75,7 +75,14 @@ static void test_bus_boundaries(void)
     assert(bus_read(&bus, 0xC000) == 0x9A);
     assert(bus_read(&bus, 0xDFFF) == 0xBC);
     assert(bus_read(&bus, 0xBFFF) == 0xFF);
-    assert(bus_read(&bus, 0xE000) == 0xFF);
+
+    /* E000-FDFF mirrors C000-DDFF; the bytes after it are still unmapped. */
+    assert(bus_read(&bus, 0xE000) == 0x9A);
+    bus_write(&bus, 0xFDFF, 0x5A);
+    assert(bus_read(&bus, 0xDDFF) == 0x5A);
+    bus_write(&bus, 0xE001, 0xA5);
+    assert(bus_read(&bus, 0xC001) == 0xA5);
+    assert(bus_read(&bus, 0xFE00) == 0xFF);
 
     bus_write(&bus, 0xFF80, 0xDE);
     bus_write(&bus, 0xFFFE, 0xF0);

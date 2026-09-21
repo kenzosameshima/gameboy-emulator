@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 
+#include <memory_map.h>
+
 typedef struct Memory {
-    uint8_t wram[0x2000];
-    uint8_t hram[0x7F];
+    uint8_t wram[MEM_WRAM_SIZE];
+    uint8_t hram[MEM_HRAM_SIZE];
 } Memory;
 
 void memory_init(Memory *memory);
