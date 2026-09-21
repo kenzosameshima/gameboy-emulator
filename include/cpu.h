@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <cycles.h>
+
 typedef struct Bus Bus;
 
 typedef enum {
@@ -19,10 +21,14 @@ typedef enum {
     /* HALT ended because IF & IE has a valid pending bit. */
     CPU_STEP_WOKE_FROM_HALT,
     CPU_STEP_INTERRUPT_SERVICED,
+    /* STOP is active and no joypad interrupt has been requested. */
+    CPU_STEP_STOPPED,
+    /*
+     * The opcode is one of the 11 undefined ones. The step consumed no
+     * time and PC still points at the opcode; see fault_pc/fault_opcode.
+     */
     CPU_STEP_UNIMPLEMENTED_OPCODE
 } CpuStepStatus;
-
-typedef uint8_t CpuCycles;
 
 typedef struct {
     uint8_t a;
@@ -41,6 +47,13 @@ typedef struct {
     uint16_t pc;
 } Registers;
 
+/*
+ * Called after every M-cycle (4 T-cycles) the CPU consumes, right after
+ * the bus access of that cycle, so the machine components advance in
+ * lockstep with the instruction.
+ */
+typedef void (*CpuTickFn)(void *context, CpuCycles cycles);
+
 typedef struct {
     Registers registers;
 
@@ -51,11 +64,29 @@ typedef struct {
     bool ime; /* Interrupt Master Enable. */
     uint8_t ime_enable_delay;
     CpuStepStatus step_status;
+
+    /* T-cycles consumed by the current cpu_step(). */
+    CpuCycles step_cycles;
+
+    CpuTickFn tick;
+    void *tick_context;
+
+    uint16_t fault_pc;
+    uint8_t fault_opcode;
 } CPU;
 
+/* Resets the CPU to the post-boot state. Clears the tick handler. */
 void cpu_init(CPU *cpu, Bus *bus);
 
-/* A halted CPU consumes a step without fetching a new instruction. */
+void cpu_set_tick_handler(CPU *cpu, CpuTickFn tick, void *context);
+
+/*
+ * Executes one instruction, one interrupt dispatch, or one halted cycle
+ * and returns the T-cycles it took. Timing is modelled per M-cycle: each
+ * bus access is followed by a 4 T-cycle tick, and internal delays are
+ * explicit idle ticks, so a bus access observes the machine as it is
+ * after all the earlier M-cycles of the same instruction.
+ */
 CpuCycles cpu_step(CPU *cpu);
 
 #endif

@@ -4,9 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <cpu.h>
-
-typedef struct InterruptRegisters InterruptRegisters;
+#include <cycles.h>
+#include <interrupts.h>
 
 enum {
     TIMER_DIV_ADDRESS = 0xFF04,

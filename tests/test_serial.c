@@ -1,0 +1,163 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include <interrupts.h>
+#include <serial.h>
+
+typedef struct Capture {
+    uint8_t bytes[16];
+    unsigned count;
+} Capture;
+
+static void capture_byte(void *context, uint8_t byte)
+{
+    Capture *capture = context;
+
+    assert(capture->count < sizeof(capture->bytes));
+    capture->bytes[capture->count++] = byte;
+}
+
+static void step_cycles(Serial *serial, unsigned cycles)
+{
+    for (unsigned done = 0; done < cycles; done += 4) {
+        serial_step(serial, 4);
+    }
+}
+
+static void test_registers(void)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+
+    assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0x00);
+    /* Only bits 7 and 0 of SC are implemented; the rest read as 1. */
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0x7E);
+
+    serial_write(&serial, SERIAL_SB_ADDRESS, 0xA5);
+    assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0xA5);
+
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x00);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0x7E);
+
+    assert(serial_read(&serial, 0xFF03) == 0xFF);
+}
+
+static void test_transfer_with_internal_clock(void)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+    Capture capture = {0};
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+    serial_set_output(&serial, capture_byte, &capture);
+
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'A');
+    assert(capture.count == 0);
+
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+
+    /* The byte is reported as soon as the transfer starts. */
+    assert(capture.count == 1);
+    assert(capture.bytes[0] == 'A');
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0xFF);
+
+    step_cycles(&serial, SERIAL_TRANSFER_CYCLES - 4);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0xFF);
+    assert(interrupts.interrupt_flag == 0);
+
+    serial_step(&serial, 4);
+
+    /* No partner: the line reads all ones, the transfer flag clears. */
+    assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0xFF);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0x7F);
+    assert(interrupts.interrupt_flag == INTERRUPT_SERIAL);
+
+    /* Nothing more happens without a new transfer. */
+    interrupts.interrupt_flag = 0;
+    step_cycles(&serial, 2 * SERIAL_TRANSFER_CYCLES);
+    assert(interrupts.interrupt_flag == 0);
+    assert(capture.count == 1);
+}
+
+static void test_restart_and_external_clock(void)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+    Capture capture = {0};
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+    serial_set_output(&serial, capture_byte, &capture);
+
+    /* Back-to-back writes each report their byte, as a game printing text. */
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'H');
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+    step_cycles(&serial, 100);
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'i');
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+
+    assert(capture.count == 2);
+    assert(capture.bytes[0] == 'H');
+    assert(capture.bytes[1] == 'i');
+
+    /* The restart counts the full transfer again. */
+    step_cycles(&serial, SERIAL_TRANSFER_CYCLES - 4);
+    assert(interrupts.interrupt_flag == 0);
+    serial_step(&serial, 4);
+    assert(interrupts.interrupt_flag == INTERRUPT_SERIAL);
+
+    /* External clock: waits for a partner that never comes. */
+    interrupts.interrupt_flag = 0;
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'X');
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x80);
+    step_cycles(&serial, 3 * SERIAL_TRANSFER_CYCLES);
+
+    assert(capture.count == 2);
+    assert(interrupts.interrupt_flag == 0);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0xFE);
+}
+
+static void test_reset_keeps_output(void)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+    Capture capture = {0};
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+    serial_set_output(&serial, capture_byte, &capture);
+
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'Z');
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+    serial_reset(&serial);
+
+    assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0x00);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0x7E);
+
+    /* The interrupted transfer is gone... */
+    step_cycles(&serial, 2 * SERIAL_TRANSFER_CYCLES);
+    assert(interrupts.interrupt_flag == 0);
+
+    /* ...but the callback survives a reset. */
+    serial_write(&serial, SERIAL_SB_ADDRESS, 'Y');
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+    assert(capture.count == 2);
+    assert(capture.bytes[1] == 'Y');
+}
+
+int main(void)
+{
+    test_registers();
+    test_transfer_with_internal_clock();
+    test_restart_and_external_clock();
+    test_reset_keeps_output();
+
+    printf("Serial tests passed!\n");
+
+    return 0;
+}
