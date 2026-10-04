@@ -370,7 +370,10 @@ static void cpu_execute_block3(CPU *cpu, uint8_t y, uint8_t z)
                     break;
 
                 default: /* EI: enable IME after the following instruction. */
-                    cpu->ime_enable_delay = 2;
+                    /* An enable already pending is not pushed back by another EI. */
+                    if (!cpu->ime && cpu->ime_enable_delay == 0) {
+                        cpu->ime_enable_delay = 2;
+                    }
                     break;
             }
             break;

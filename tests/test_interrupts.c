@@ -42,14 +42,15 @@ static void test_interrupt_registers(void)
     InterruptRegisters interrupts;
     setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
 
-    assert(bus_read(&bus, 0xFF0F) == 0);
+    /* IF reads with its upper three bits set; IE keeps all eight bits. */
+    assert(bus_read(&bus, 0xFF0F) == 0xE0);
     assert(bus_read(&bus, 0xFFFF) == 0);
 
     bus_write(&bus, 0xFF0F, (uint8_t)(INTERRUPT_VBLANK | 0xE0));
     bus_write(&bus, 0xFFFF, (uint8_t)(INTERRUPT_TIMER | 0xE0));
 
-    assert(bus_read(&bus, 0xFF0F) == INTERRUPT_VBLANK);
-    assert(bus_read(&bus, 0xFFFF) == INTERRUPT_TIMER);
+    assert(bus_read(&bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
+    assert(bus_read(&bus, 0xFFFF) == (INTERRUPT_TIMER | 0xE0));
 
     cleanup_cpu(&cartridge);
 }
@@ -90,12 +91,14 @@ static void test_halt_wakeup_without_service(void)
     bus_write(&bus, 0xFF0F, INTERRUPT_VBLANK);
     bus_write(&bus, 0xFFFF, INTERRUPT_VBLANK);
     cpu.ime = false;
+
+    /* HALT ends at once and the next instruction (a NOP) runs in the same step. */
     assert(cpu_step(&cpu) == 4);
     assert(!cpu.halted);
-    assert(cpu.step_status == CPU_STEP_WOKE_FROM_HALT);
+    assert(cpu.step_status == CPU_STEP_EXECUTED);
     assert(cpu.ime == false);
-    assert(bus_read(&bus, 0xFF0F) == INTERRUPT_VBLANK);
-    assert(cpu.registers.pc == 0x0101);
+    assert(bus_read(&bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
+    assert(cpu.registers.pc == 0x0102);
 
     cleanup_cpu(&cartridge);
 }
@@ -134,7 +137,7 @@ static void test_interrupt_service(
     assert(bus_read(&bus, 0xC0FF) == 0x23);
     assert(
         bus_read(&bus, INTERRUPT_FLAG_ADDRESS) ==
-        (uint8_t)(INTERRUPT_TIMER & (uint8_t)~interrupt_mask)
+        (uint8_t)((INTERRUPT_TIMER & (uint8_t)~interrupt_mask) | 0xE0)
     );
 
     cleanup_cpu(&cartridge);
@@ -167,7 +170,7 @@ static void test_interrupt_priority(void)
     assert(cpu_step(&cpu) == 20);
     assert(cpu.registers.pc == 0x0040);
     assert(
-        bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == INTERRUPT_TIMER
+        bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == (INTERRUPT_TIMER | 0xE0)
     );
 
     cleanup_cpu(&cartridge);
@@ -260,7 +263,7 @@ static void test_di_ei_reti(void)
     assert(cpu_step(&cpu) == 4);
     assert(!cpu.ime);
     assert(cpu.registers.pc == 0x0101);
-    assert(bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == INTERRUPT_VBLANK);
+    assert(bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == (INTERRUPT_VBLANK | 0xE0));
 
     assert(cpu_step(&cpu) == 4);
     assert(cpu.ime);

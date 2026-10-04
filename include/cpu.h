@@ -19,8 +19,6 @@ typedef enum {
 typedef enum {
     CPU_STEP_EXECUTED,
     CPU_STEP_HALTED,
-    /* HALT ended because IF & IE has a valid pending bit. */
-    CPU_STEP_WOKE_FROM_HALT,
     CPU_STEP_INTERRUPT_SERVICED,
     /* STOP is active and no joypad interrupt has been requested. */
     CPU_STEP_STOPPED,

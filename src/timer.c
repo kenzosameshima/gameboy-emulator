@@ -59,11 +59,16 @@ void timer_init(Timer *timer, InterruptRegisters *interrupts)
     timer->tac = 0;
     timer->reload_pending = false;
     timer->reload_delay = 0;
+    timer->reload_hold = 0;
     timer->interrupts = interrupts;
 }
 
 static void timer_advance_reload(Timer *timer)
 {
+    if (timer->reload_hold != 0) {
+        timer->reload_hold--;
+    }
+
     if (!timer->reload_pending) {
         return;
     }
@@ -74,6 +79,7 @@ static void timer_advance_reload(Timer *timer)
         timer->tima = timer->tma;
         interrupts_request(timer->interrupts, INTERRUPT_TIMER);
         timer->reload_pending = false;
+        timer->reload_hold = TIMER_RELOAD_DELAY_CYCLES;
     }
 }
 
@@ -112,6 +118,11 @@ void timer_write(Timer *timer, uint16_t address, uint8_t value)
             break;
 
         case TIMER_TIMA_ADDRESS:
+            /* Ignored in the M-cycle right after the reload. */
+            if (timer->reload_hold != 0) {
+                break;
+            }
+
             if (!timer->reload_pending ||
                 timer->reload_delay == TIMER_RELOAD_DELAY_CYCLES) {
                 timer->tima = value;
@@ -125,6 +136,11 @@ void timer_write(Timer *timer, uint16_t address, uint8_t value)
 
         case TIMER_TMA_ADDRESS:
             timer->tma = value;
+
+            /* The reload is still copying TMA, so the new value lands too. */
+            if (timer->reload_hold != 0) {
+                timer->tima = value;
+            }
             break;
 
         case TIMER_TAC_ADDRESS:

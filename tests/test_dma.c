@@ -159,7 +159,7 @@ static void test_the_cpu_bus_is_taken(void)
     bus_write(&m.bus, 0xFF81, 0x88);
     assert(bus_read(&m.bus, 0xFF81) == 0x88);
     bus_write(&m.bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_TIMER);
-    assert(bus_read(&m.bus, INTERRUPT_FLAG_ADDRESS) == INTERRUPT_TIMER);
+    assert(bus_read(&m.bus, INTERRUPT_FLAG_ADDRESS) == (INTERRUPT_TIMER | 0xE0));
     assert(bus_read(&m.bus, INTERRUPT_ENABLE_ADDRESS) == 0);
 
     /* Writes to blocked areas are dropped. */

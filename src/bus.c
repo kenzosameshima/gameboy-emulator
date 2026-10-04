@@ -172,7 +172,8 @@ static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
     }
 
     if (address == INTERRUPT_FLAG_ADDRESS) {
-        return bus->interrupts->interrupt_flag;
+        /* The upper three bits of IF read as 1. */
+        return (uint8_t)(bus->interrupts->interrupt_flag | 0xE0);
     }
 
     if (address == INTERRUPT_ENABLE_ADDRESS) {
@@ -275,7 +276,7 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
     }
 
     if (address == INTERRUPT_ENABLE_ADDRESS) {
-        bus->interrupts->interrupt_enable =
-            (uint8_t)(value & INTERRUPT_VALID_MASK);
+        /* IE keeps all 8 bits, though only the low five are sources. */
+        bus->interrupts->interrupt_enable = value;
     }
 }

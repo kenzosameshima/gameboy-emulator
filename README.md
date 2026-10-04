@@ -92,15 +92,15 @@ Implemented interrupt registers and sources:
 | Serial | 3 | `0x0058` |
 | Joypad | 4 | `0x0060` |
 
-`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): priority selection, IME clearing, PC push, selective IF clearing, and the vector load. Priority and vectors are pure functions in `interrupts.c` (`interrupts_highest_priority()`, `interrupts_vector()`).
+`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): IME clearing, the PC push, priority selection, selective IF clearing, and the vector load. The interrupt is chosen after the high byte of PC has been pushed, so a push that lands on `IE` (SP at 0000 or 0001) can cancel the dispatch (PC becomes 0 and IF is left alone) or redirect it to a lower priority interrupt. `IF` reads with its upper three bits set, and `IE` keeps all eight bits. Priority and vectors are pure functions in `interrupts.c` (`interrupts_highest_priority()`, `interrupts_vector()`).
 
 HALT behavior distinguishes:
 
 - CPU halted without pending interrupt.
-- HALT wake-up when an interrupt is pending but IME is disabled.
+- HALT wake-up when an interrupt is pending but IME is disabled: HALT ends with no delay of its own and the next instruction runs at once.
 - Direct interrupt service when IME is enabled.
 
-`EI` uses delayed IME enable semantics. `DI` cancels IME and a pending enable. `RETI` restores PC from the stack and enables IME.
+`EI` uses delayed IME enable semantics, and an `EI` executed while an enable is already pending does not push it back. `DI` cancels IME and a pending enable. `RETI` restores PC from the stack and enables IME.
 
 ### Timer
 
@@ -109,7 +109,7 @@ Registers: DIV `0xFF04`, TIMA `0xFF05`, TMA `0xFF06`, TAC `0xFF07`.
 - Internal 16-bit divider, DIV exposing its high byte, DIV reset on write.
 - TAC frequency selection.
 - Falling-edge-based TIMA increments, including the falling edges caused by DIV and TAC writes.
-- Delayed TIMA reload after overflow, TIMA write cancellation, and TMA write behavior during the reload window.
+- Delayed TIMA reload after overflow, TIMA write cancellation in the cycle where TIMA reads 0, and the cycle after the reload where writes to TIMA are ignored and a write to TMA also reaches TIMA.
 - Timer interrupt requests through `IF.TIMER`.
 
 The Timer models the DMG normal-speed path. CGB double-speed behavior is not implemented.
@@ -301,6 +301,8 @@ The test suite includes:
 - `test_cpu_alu_exhaustive`: every 8-bit ALU, INC/DEC, rotate/shift and DAA input (plus ADD HL and SP+e8 samples) against an independent model; DAA is checked against decimal arithmetic on BCD operands.
 - `test_cpu`, `test_cpu_instructions`: register and memory wiring of INC/DEC and LD, jumps, and control behavior.
 - `test_interrupts`, `test_emulator_interrupts`: priority, service, HALT wake-up, EI, DI, RETI, and Timer-to-CPU service.
+- `test_cpu_edge_cases`: the cases the Mooneye ROMs found, as unit tests: an `EI` while an enable is pending, HALT waking with no extra cycle, interrupt dispatch when the PC push lands on `IE`, and the `IF`/`IE` register bits.
+- `test_timer_reload`: the M-cycles after a TIMA overflow, where TIMA reads 0, is reloaded, and then ignores writes while a TMA write also reaches it.
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
 - `test_serial`: register masks, transfer timing, restart, and the callback.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
@@ -348,13 +350,12 @@ make build/rom_test
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time. MBC1 multicart wiring is not detected.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
-- Interrupt dispatch does not model the `IE` write during the high-byte push.
-- Register power-on values are the DMG post-boot CPU registers only. DIV and the hardware I/O registers start at zero, and `IF`/`TAC` unused bits read as zero rather than one.
+- Register power-on values are the DMG post-boot CPU registers only. DIV and most I/O registers start at zero, and the unused bits of `TAC` and other registers read as zero rather than one.
 - No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Validate against Mooneye acceptance ROMs. They signal a pass with `LD B,B` and the Fibonacci values in the registers, so the runner needs to detect that instead of serial text. Along the way: power-on DIV, `IF`/`TAC` upper bits, and the HALT bug.
+1. Close the remaining Mooneye failures (83 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
 2. Battery saves, then audio.

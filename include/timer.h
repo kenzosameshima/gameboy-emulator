@@ -25,14 +25,18 @@ typedef struct Timer {
 
     bool reload_pending;
     uint8_t reload_delay;
+    /* M-cycle after the reload, when writes behave differently. */
+    uint8_t reload_hold;
 
     InterruptRegisters *interrupts;
 } Timer;
 
 /*
  * TIMA is clocked on falling edges of the selected divider bit.
- * Overflow exposes TIMA as 00 for one M-cycle, then reloads TMA and
- * requests the timer interrupt.
+ * Overflow exposes TIMA as 00 for one M-cycle (a write to TIMA then cancels
+ * the reload), then reloads TMA and requests the timer interrupt. During the
+ * M-cycle after the reload, writes to TIMA are ignored and a write to TMA is
+ * also loaded into TIMA.
  */
 
 void timer_init(Timer *timer, InterruptRegisters *interrupts);

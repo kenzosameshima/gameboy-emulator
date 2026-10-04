@@ -3,14 +3,11 @@
 # not listed here, and reports listed ROMs that now pass: delete their lines.
 #
 # Baseline when the runner was added: 45 of 94 DMG ROMs pass. MBC2 and MBC5
-# support brought it to 61, and an exact DMA model to 77.
+# support brought it to 61, an exact DMA model to 77, and fixes to EI, HALT, interrupt
+# dispatch, IF/IE and the timer reload cycle to 83.
 acceptance/bits/unused_hwio-GS.gb
 acceptance/boot_div-dmgABCmgb.gb
 acceptance/boot_hwio-dmgABCmgb.gb
-acceptance/ei_sequence.gb
-acceptance/halt_ime0_nointr_timing.gb
-acceptance/if_ie_registers.gb
-acceptance/interrupts/ie_push.gb
 acceptance/ppu/hblank_ly_scx_timing-GS.gb
 acceptance/ppu/intr_2_mode0_timing_sprites.gb
 acceptance/ppu/lcdon_timing-GS.gb
@@ -18,6 +15,4 @@ acceptance/ppu/lcdon_write_timing-GS.gb
 acceptance/ppu/stat_lyc_onoff.gb
 acceptance/ppu/vblank_stat_intr-GS.gb
 acceptance/serial/boot_sclk_align-dmgABCmgb.gb
-acceptance/timer/tima_write_reloading.gb
-acceptance/timer/tma_write_reloading.gb
 emulator-only/mbc1/multicart_rom_8Mb.gb

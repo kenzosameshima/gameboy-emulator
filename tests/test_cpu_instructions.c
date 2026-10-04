@@ -307,7 +307,7 @@ static void test_xor_a_and_ldh(void)
     cartridge.rom[0x0100] = 0xE0;
     cartridge.rom[0x0101] = 0x0F;
     assert(cpu_step(&cpu) == 12);
-    assert(bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == 0x1A);
+    assert(bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == (0x1A | 0xE0));
     assert(cpu.registers.pc == 0x0102);
 
     cpu_init(&cpu, &bus, bus.interrupts);

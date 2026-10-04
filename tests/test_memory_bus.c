@@ -90,7 +90,7 @@ static void test_bus_boundaries(void)
     assert(bus_read(&bus, 0xFF80) == 0xDE);
     assert(bus_read(&bus, 0xFFFE) == 0xF0);
     assert(bus_read(&bus, 0xFF7F) == 0xFF);
-    assert(bus_read(&bus, 0xFF0F) == 0);
+    assert(bus_read(&bus, 0xFF0F) == 0xE0);
     assert(bus_read(&bus, 0xFFFF) == 0);
 
     bus_write(&bus, 0xFF7F, 0x01);
@@ -98,7 +98,7 @@ static void test_bus_boundaries(void)
     bus_write(&bus, 0xFFFF, INTERRUPT_TIMER);
 
     assert(bus_read(&bus, 0xFF7F) == 0xFF);
-    assert(bus_read(&bus, 0xFF0F) == INTERRUPT_VBLANK);
+    assert(bus_read(&bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
     assert(bus_read(&bus, 0xFFFF) == INTERRUPT_TIMER);
 
     cartridge_destroy(&cartridge);
