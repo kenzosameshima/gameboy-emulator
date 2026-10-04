@@ -209,6 +209,10 @@ Run the unit and integration tests:
 make test
 ```
 
+`make check` runs the unit tests and the test ROMs below. Tests are always built with assertions enabled (`-UNDEBUG`). The default build uses `-O2`; pass `OPT=-O0` for a debugging build.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `make check` on every push to `main` and every pull request, with gcc and clang, each with and without `SANITIZE=1`.
+
 Each `tests/test_*.c` file is built and run automatically. Run a single one with `make build/tests/test_timer` (`.exe` suffix on Windows) and execute it from the repository root, since tests read `opcodes.json` and `roms/`.
 
 The test suite includes:
