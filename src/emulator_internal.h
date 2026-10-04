@@ -24,6 +24,10 @@ struct Emulator {
 
     uint64_t cycles;
 
+    /* Why the last emulator_load_rom() failed, if it was the cartridge type. */
+    bool unsupported_cartridge;
+    uint8_t unsupported_cartridge_type;
+
     atomic_bool running;
 };
 

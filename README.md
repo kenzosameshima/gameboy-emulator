@@ -62,7 +62,7 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 - ROM file loading with transactional replacement.
 - Header parsing for the cartridge type and RAM size.
 - ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size.
-- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping.
+- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so `./gameboy "roms/Pokemon Red.gb"` says it is type `0x13` (MBC3).
 - Cartridge RAM is not persisted to disk.
 
 ### CPU
