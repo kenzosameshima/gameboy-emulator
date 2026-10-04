@@ -29,7 +29,7 @@ static void emulator_reset(Emulator *emulator)
     interrupts_init(&emulator->interrupts);
     timer_init(&emulator->timer, &emulator->interrupts);
     serial_reset(&emulator->serial);
-    cpu_init(&emulator->cpu, &emulator->bus);
+    cpu_init(&emulator->cpu, &emulator->bus, &emulator->interrupts);
     cpu_set_tick_handler(&emulator->cpu, emulator_tick, emulator);
 
     emulator->cycles = 0;
@@ -205,19 +205,7 @@ bool emulator_is_stalled(const Emulator *emulator)
         return false;
     }
 
-    if (emulator->cpu.halted) {
-        /* HALT only ends when IF & IE is non-zero. */
-        return (emulator->interrupts.interrupt_enable &
-                INTERRUPT_VALID_MASK) == 0;
-    }
-
-    if (emulator->cpu.stopped) {
-        /* There is no joypad yet, so nothing can request its interrupt. */
-        return (emulator->interrupts.interrupt_flag &
-                INTERRUPT_JOYPAD) == 0;
-    }
-
-    return false;
+    return cpu_is_stalled(&emulator->cpu);
 }
 
 

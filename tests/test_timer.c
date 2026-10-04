@@ -247,7 +247,7 @@ static void test_timer_during_halt_and_pending_if(void)
     Memory memory;
     CPU cpu;
     setup_timer(&timer, &interrupts, &bus, &cartridge, &memory);
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
 
     cartridge.rom[0x0100] = 0x76;
     bus_write(

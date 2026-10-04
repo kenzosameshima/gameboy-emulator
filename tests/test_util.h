@@ -56,7 +56,7 @@ static inline void test_machine_tick(void *context, CpuCycles cycles)
 
 static inline void test_machine_reset_cpu(TestMachine *machine)
 {
-    cpu_init(&machine->cpu, &machine->bus);
+    cpu_init(&machine->cpu, &machine->bus, &machine->interrupts);
     cpu_set_tick_handler(&machine->cpu, test_machine_tick, machine);
 
     machine->ticked_cycles = 0;
