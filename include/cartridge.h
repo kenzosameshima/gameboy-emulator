@@ -25,6 +25,8 @@ enum {
 typedef struct Cartridge {
     uint8_t *rom;
     size_t rom_size;
+    /* Number of 16 KiB banks rounded up to a power of two, minus one. */
+    size_t rom_bank_mask;
 
     CartridgeMapper mapper;
 

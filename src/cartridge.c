@@ -72,11 +72,11 @@ static bool cartridge_configure(
 }
 
 /* Number of 16 KiB banks, rounded up to a power of two, minus one. */
-static size_t cartridge_rom_bank_mask(const Cartridge *cartridge)
+static size_t cartridge_rom_bank_mask(size_t rom_size)
 {
     size_t banks = 1;
 
-    while (banks * CARTRIDGE_ROM_BANK_SIZE < cartridge->rom_size) {
+    while (banks * CARTRIDGE_ROM_BANK_SIZE < rom_size) {
         banks <<= 1;
     }
 
@@ -103,7 +103,7 @@ static size_t cartridge_rom_offset(
                cartridge->bank_low;
     }
 
-    bank &= cartridge_rom_bank_mask(cartridge);
+    bank &= cartridge->rom_bank_mask;
 
     return bank * CARTRIDGE_ROM_BANK_SIZE +
            (address & (CARTRIDGE_ROM_BANK_SIZE - 1));
@@ -136,6 +136,7 @@ void cartridge_init(Cartridge *cartridge)
 
     cartridge->rom = NULL;
     cartridge->rom_size = 0;
+    cartridge->rom_bank_mask = 0;
     cartridge->mapper = CARTRIDGE_MAPPER_NONE;
     cartridge->ram = NULL;
     cartridge->ram_size = 0;
@@ -220,6 +221,7 @@ int cartridge_load(Cartridge *cartridge, const char *path)
     cartridge_init(cartridge);
     cartridge->rom = rom;
     cartridge->rom_size = rom_size;
+    cartridge->rom_bank_mask = cartridge_rom_bank_mask(rom_size);
     cartridge->mapper = mapper;
     cartridge->ram = ram;
     cartridge->ram_size = ram_size;
@@ -238,6 +240,7 @@ void cartridge_destroy(Cartridge *cartridge)
 
     cartridge->rom = NULL;
     cartridge->rom_size = 0;
+    cartridge->rom_bank_mask = 0;
     cartridge->ram = NULL;
     cartridge->ram_size = 0;
 }
