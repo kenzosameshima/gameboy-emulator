@@ -7,7 +7,7 @@ void serial_reset(Serial *serial)
     serial->sb = 0;
     serial->sc = 0;
     serial->transferring = false;
-    serial->cycles_remaining = 0;
+    serial->bits_remaining = 0;
 }
 
 void serial_init(Serial *serial, InterruptRegisters *interrupts)
@@ -55,7 +55,7 @@ void serial_write(Serial *serial, uint16_t address, uint8_t value)
 
             serial->transferring =
                 (serial->sc & SERIAL_SC_INTERNAL_CLOCK) != 0;
-            serial->cycles_remaining = SERIAL_TRANSFER_CYCLES;
+            serial->bits_remaining = SERIAL_BITS;
 
             if (serial->transferring && serial->output != NULL) {
                 serial->output(serial->output_context, serial->sb);
@@ -67,19 +67,23 @@ void serial_write(Serial *serial, uint16_t address, uint8_t value)
     }
 }
 
-void serial_step(Serial *serial, CpuCycles cycles)
+void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider)
 {
     if (!serial->transferring) {
         return;
     }
 
-    if (cycles < serial->cycles_remaining) {
-        serial->cycles_remaining = (uint16_t)(serial->cycles_remaining - cycles);
+    /* Falling edges of bit 8 are the multiples of 512 the counter crossed. */
+    uint16_t before = (uint16_t)(divider - cycles);
+    unsigned edges = (unsigned)((divider >> 9) - (before >> 9)) & 0x7F;
+
+    if (edges < serial->bits_remaining) {
+        serial->bits_remaining = (uint8_t)(serial->bits_remaining - edges);
         return;
     }
 
     serial->transferring = false;
-    serial->cycles_remaining = 0;
+    serial->bits_remaining = 0;
     serial->sb = 0xFF;
     serial->sc = (uint8_t)(serial->sc & ~SERIAL_SC_START);
     interrupts_request(serial->interrupts, INTERRUPT_SERIAL);

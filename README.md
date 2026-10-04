@@ -116,7 +116,7 @@ The Timer models the DMG normal-speed path. CGB double-speed behavior is not imp
 
 ### Serial
 
-Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started with the internal clock (`SC = 0x81`) reports its byte to the output callback, completes after 4096 T-cycles with `SB = 0xFF`, clears `SC` bit 7, and requests the serial interrupt. Writing `SC = 0x81` again restarts the transfer. The external clock never completes.
+Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started with the internal clock (`SC = 0x81`) reports its byte to the output callback, completes with `SB = 0xFF`, clears `SC` bit 7, and requests the serial interrupt. The serial clock is the system counter divided down: one bit is shifted on each falling edge of counter bit 8 (every 512 T-cycles, at multiples of 512 of the timer divider) and the transfer completes on the eighth edge after the `SC` write, so it takes between 3584 and 4096 cycles depending on where the divider is. Writing `SC = 0x81` again restarts the transfer. The external clock never completes.
 
 ### PPU
 
@@ -305,7 +305,7 @@ The test suite includes:
 - `test_timer_reload`: the M-cycles after a TIMA overflow, where TIMA reads 0, is reloaded, and then ignores writes while a TMA write also reaches it.
 - `test_emulator_boot_state`: what a ROM sees at its entry point, checked with real programs; so far the divider the boot ROM leaves (DIV reads 0xAB).
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
-- `test_serial`: register masks, transfer timing, restart, and the callback.
+- `test_serial`: register masks, transfer timing, restart, and the callback. Also the transfer's alignment to the system counter, checked for several divider phases including the boot ROM's.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
 - `test_cartridge_mbc2`: the ROM bank and RAM enable registers selected by address bit 8, and the 4-bit built-in RAM with its echo.
 - `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
@@ -358,5 +358,5 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (92 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the serial clock alignment at boot, the HALT bug, and the window's effect on mode 3 length.
+1. Close the remaining Mooneye failures (93 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the HALT bug, and the window's effect on mode 3 length.
 2. Battery saves, then audio.

@@ -15,7 +15,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
     emulator->cycles += cycles;
 
     timer_step(&emulator->timer, cycles);
-    serial_step(&emulator->serial, cycles);
+    serial_step(&emulator->serial, cycles, emulator->timer.divider);
     dma_step(&emulator->dma, cycles);
     ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);

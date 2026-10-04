@@ -6,6 +6,5 @@
 # support brought it to 61, an exact DMA model to 77, and fixes to EI, HALT, interrupt
 # dispatch, IF/IE and the timer reload cycle to 83, the boot DIV phase to 84, and
 # TAC unused bits to 85, MBC1 multicart wiring to 86, and PPU timing (mode 3 length,
-# LY at dot 452, LCD-on, STAT) to 92.
+# LY at dot 452, LCD-on, STAT) to 92, and the serial clock phase to 93.
 acceptance/boot_hwio-dmgABCmgb.gb
-acceptance/serial/boot_sclk_align-dmgABCmgb.gb
