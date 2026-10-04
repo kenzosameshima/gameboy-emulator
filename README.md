@@ -2,7 +2,7 @@
 
 An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
 
-The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. There is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
+The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played; there is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
 ## Current Architecture
 
@@ -161,6 +161,7 @@ The constants live in `include/memory_map.h`. Other regions are currently unimpl
 ```text
 include/                Module headers (public API is emulator.h)
 src/main.c              CLI entry point
+frontend/sdl_main.c      SDL2 front end: window, keyboard, frame pacing
 src/emulator.c          Emulator composition, lifecycle, run loop, tick handler
 src/emulator_internal.h Private Emulator definition
 src/cpu.c               CPU step, M-cycle timing, stack, interrupt dispatch
@@ -195,6 +196,7 @@ makefile                Build and test rules
 - GCC 14 or newer builds with `-std=c23`. Older GCC, such as 13 on Ubuntu 24.04, is detected by the Makefile and builds with `-std=c2x`. Clang works with `make CC=clang`.
 - GNU Make (`mingw32-make` from MSYS2 UCRT64 on Windows).
 - A POSIX-like shell for the Makefile recipes.
+- SDL2 and pkg-config, only for the optional front end (`libsdl2-dev` on Debian and Ubuntu). The core, the tests and the other tools do not need them.
 
 The Makefile enables strict diagnostics: `-Wall -Wextra -Wpedantic -Werror -fanalyzer -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wundef -Wcast-qual -Wcast-align -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes`.
 
@@ -219,6 +221,28 @@ make SANITIZE=1 BUILD=/tmp/gb-san test rom-test
 ```
 
 ## Run
+
+### Play
+
+The SDL front end shows the picture in a window, turns the keyboard into buttons and runs at the real frame rate (about 59.7 frames per second):
+
+```sh
+make sdl
+./build/gameboy-sdl "roms/Tetris.gb"
+```
+
+| Key | Button |
+|---|---|
+| Arrow keys | D-pad |
+| `Z` | A |
+| `X` | B |
+| `Enter` | Start |
+| Right `Shift` or `Backspace` | Select |
+| `Esc` | Quit |
+
+Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display). The window can be resized and keeps its shape. There is no audio, no save file and no pause key yet.
+
+### Command line
 
 Pass a ROM path to the executable. Bytes the ROM sends over the serial port are printed to standard output:
 
@@ -319,5 +343,4 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 ## Development Direction
 
 1. Validate against Mooneye acceptance ROMs. They signal a pass with `LD B,B` and the Fibonacci values in the registers, so the runner needs to detect that instead of serial text. Along the way: power-on DIV, `IF`/`TAC` upper bits, and the HALT bug.
-2. A front end (for example SDL) outside the core: it reads `emulator_framebuffer()` and calls `emulator_set_buttons()`.
-3. Battery saves, then audio.
+2. Battery saves, then audio.
