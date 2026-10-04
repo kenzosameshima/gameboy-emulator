@@ -52,7 +52,9 @@ static void test_rom_banking(void)
 
     write_banked_rom(64, TYPE_MBC1_RAM_BATTERY, RAM_CODE_32K);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
     assert(cartridge.mapper == CARTRIDGE_MAPPER_MBC1);
     assert(cartridge.ram_size == 0x8000);
 
@@ -111,7 +113,9 @@ static void test_bank_numbers_wrap_to_rom_size(void)
     /* 8 banks: the bank register is masked with 7. */
     write_banked_rom(8, 0x01, 0x00);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
     assert(cartridge.ram_size == 0);
 
     cartridge_write(&cartridge, 0x2000, 9);
@@ -130,7 +134,9 @@ static void test_ram_banking(void)
 
     write_banked_rom(4, TYPE_MBC1_RAM_BATTERY, RAM_CODE_32K);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
 
     /* RAM is disabled at power-on: reads float high, writes are lost. */
     assert(cartridge_read_ram(&cartridge, 0xA000) == 0xFF);
@@ -179,7 +185,9 @@ static void test_bus_routes_mapper_and_ram(void)
 
     write_banked_rom(4, TYPE_MBC1_RAM_BATTERY, RAM_CODE_32K);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
 
     memory_init(&memory);
     interrupts_init(&interrupts);
@@ -210,13 +218,27 @@ static void test_unsupported_cartridge_is_rejected(void)
 
     write_banked_rom(4, TYPE_MBC1_RAM_BATTERY, RAM_CODE_32K);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
 
     uint8_t *loaded_rom = cartridge.rom;
 
     /* 0x13 is MBC3+RAM+BATTERY, which is not implemented. */
     write_banked_rom(4, 0x13, 0x00);
-    assert(cartridge_load(&cartridge, rom_path) == 0);
+    uint8_t unsupported_type = 0;
+
+    assert(
+        cartridge_load(&cartridge, rom_path, &unsupported_type) ==
+        CARTRIDGE_LOAD_UNSUPPORTED_TYPE
+    );
+    assert(unsupported_type == 0x13);
+
+    /* The type output is optional. */
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) ==
+        CARTRIDGE_LOAD_UNSUPPORTED_TYPE
+    );
 
     /* A failed load leaves the previous cartridge intact. */
     assert(cartridge.rom == loaded_rom);
@@ -233,7 +255,9 @@ static void test_rom_only_ignores_mapper_writes(void)
 
     write_banked_rom(2, 0x00, 0x00);
     cartridge_init(&cartridge);
-    assert(cartridge_load(&cartridge, rom_path) == 1);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
     assert(cartridge.mapper == CARTRIDGE_MAPPER_NONE);
 
     cartridge_write(&cartridge, 0x2000, 0x05);
