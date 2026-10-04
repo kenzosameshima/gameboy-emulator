@@ -247,7 +247,7 @@ static void cpu_service_interrupt(CPU *cpu, uint8_t pending)
     cpu_idle(cpu);
     cpu_push16(cpu, cpu->registers.pc);
 
-    cpu->bus->interrupts->interrupt_flag &= (uint8_t)~interrupt_mask;
+    interrupts_acknowledge(cpu->bus->interrupts, interrupt_mask);
 
     cpu->registers.pc = vector;
     cpu_idle(cpu);

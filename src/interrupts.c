@@ -13,6 +13,11 @@ void interrupts_request(InterruptRegisters *interrupts, uint8_t mask)
     interrupts->interrupt_flag |= (uint8_t)(mask & INTERRUPT_VALID_MASK);
 }
 
+void interrupts_acknowledge(InterruptRegisters *interrupts, uint8_t mask)
+{
+    interrupts->interrupt_flag &= (uint8_t)~mask;
+}
+
 uint8_t interrupts_pending(const InterruptRegisters *interrupts)
 {
     return (uint8_t)(
