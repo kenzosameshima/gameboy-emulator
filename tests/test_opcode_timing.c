@@ -209,14 +209,14 @@ static void check_instruction(
 
     CpuCycles cycles = cpu_step(&machine->cpu);
 
-    if (cycles != expected_cycles) {
+    if ((int)cycles != expected_cycles) {
         printf(
             "%s (opcode 0x%02X): took %d cycles, opcodes.json says %d\n",
-            info->mnemonic, program[0], cycles, expected_cycles
+            info->mnemonic, program[0], (int)cycles, expected_cycles
         );
     }
 
-    assert(cycles == expected_cycles);
+    assert((int)cycles == expected_cycles);
     assert(machine->cpu.step_status != CPU_STEP_UNIMPLEMENTED_OPCODE);
 
     /* All the time is consumed as M-cycles ticked to the machine. */

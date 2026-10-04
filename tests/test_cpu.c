@@ -229,7 +229,7 @@ static void test_inc_registers(void)
         cpu.registers.b = 0x0F;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.b == 0x10);
@@ -265,7 +265,7 @@ static void test_inc_registers(void)
         cpu.registers.c = 0xFF;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.c == 0x00);
@@ -299,7 +299,7 @@ static void test_inc_registers(void)
         cpu.registers.a = 0x01;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.a == 0x02);
@@ -348,7 +348,7 @@ static void test_inc_hl_memory(void)
         0x0F
     );
 
-    uint8_t cycles = cpu_step(&cpu);
+    CpuCycles cycles = cpu_step(&cpu);
 
     assert(cycles == 12);
 
@@ -407,7 +407,7 @@ static void test_dec_registers(void)
         cpu.registers.b = 0x10;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.b == 0x0F);
@@ -443,7 +443,7 @@ static void test_dec_registers(void)
         cpu.registers.c = 0x01;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.c == 0x00);
@@ -479,7 +479,7 @@ static void test_dec_registers(void)
         cpu.registers.a = 0x02;
         cpu.registers.f = FLAG_C;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 4);
         assert(cpu.registers.a == 0x01);
@@ -532,7 +532,7 @@ static void test_dec_hl_memory(void)
         0x10
     );
 
-    uint8_t cycles = cpu_step(&cpu);
+    CpuCycles cycles = cpu_step(&cpu);
 
     assert(cycles == 12);
 
@@ -589,7 +589,7 @@ static void test_inc_register_pairs(void)
         cpu.registers.c = 0xFF;
         cpu.registers.f = 0xF0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.b == 0x13);
@@ -618,7 +618,7 @@ static void test_inc_register_pairs(void)
         cpu.registers.e = 0xFF;
         cpu.registers.f = 0xA0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.d == 0x00);
@@ -647,7 +647,7 @@ static void test_inc_register_pairs(void)
         cpu.registers.l = 0xFF;
         cpu.registers.f = 0x50;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.h == 0x13);
@@ -675,7 +675,7 @@ static void test_inc_register_pairs(void)
         cpu.registers.sp = 0xFFFF;
         cpu.registers.f = 0xF0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.sp == 0x0000);
@@ -726,7 +726,7 @@ static void test_dec_register_pairs(void)
         cpu.registers.c = 0x00;
         cpu.registers.f = 0xF0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.b == 0x11);
@@ -755,7 +755,7 @@ static void test_dec_register_pairs(void)
         cpu.registers.e = 0x00;
         cpu.registers.f = 0xA0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.d == 0xFF);
@@ -784,7 +784,7 @@ static void test_dec_register_pairs(void)
         cpu.registers.l = 0x00;
         cpu.registers.f = 0x50;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.h == 0x11);
@@ -812,7 +812,7 @@ static void test_dec_register_pairs(void)
         cpu.registers.sp = 0x0000;
         cpu.registers.f = 0xF0;
 
-        uint8_t cycles = cpu_step(&cpu);
+        CpuCycles cycles = cpu_step(&cpu);
 
         assert(cycles == 8);
         assert(cpu.registers.sp == 0xFFFF);
@@ -964,7 +964,7 @@ static void test_ld_r8_r8(void)
             /*
              * Executa.
              */
-            uint8_t cycles = cpu_step(&cpu);
+            CpuCycles cycles = cpu_step(&cpu);
 
             /*
              * LD r8,r8 possui um byte.
@@ -1048,7 +1048,7 @@ static void test_cpu_control_states_and_flags(void)
 
     assert(cpu.registers.f == 0xB0);
 
-    uint8_t cycles = cpu_step(&cpu);
+    CpuCycles cycles = cpu_step(&cpu);
 
     assert(cycles == 4);
     assert(cpu.halted);
