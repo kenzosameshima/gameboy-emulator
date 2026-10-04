@@ -1,12 +1,15 @@
 /*
  * Runs a ROM headless for a number of frames and saves the LCD picture.
  *
- * Usage: frame_dump <rom> <out> [frames] [scale]
+ * Usage: frame_dump <rom> <out> [frames] [scale] [--press name@from-to]...
  *
  *   out     *.png  8-bit grayscale PNG (uncompressed), scaled by `scale`
  *           other  raw shades, one byte (0-3) per pixel, 160x144, no header
  *   frames  frames to run before saving (default 60)
  *   scale   integer pixel scale for PNG output (default 3)
+ *   --press holds a button from one frame up to, but not including, another;
+ *           names are right left up down a b select start, for example
+ *           --press start@300-305. May be repeated.
  *
  * Exit code: 0 on success, 1 on any error.
  */
@@ -22,7 +25,8 @@
 enum {
     DEFAULT_FRAMES = 60,
     DEFAULT_SCALE = 3,
-    CYCLES_PER_FRAME_RUN = 70224,
+    CYCLES_PER_SLICE = 4560,    /* ten lines, so input lands on frame edges */
+    MAX_PRESSES = 32,
     STORED_BLOCK_MAX = 65535
 };
 
@@ -204,19 +208,108 @@ static int parse_count(const char *text, unsigned long *value)
     return errno == 0 && end != text && *end == '\0' && *value > 0;
 }
 
+/* A button held from one frame up to, but not including, another. */
+typedef struct Press {
+    uint8_t mask;
+    unsigned long from;
+    unsigned long to;
+} Press;
+
+static const struct {
+    const char *name;
+    uint8_t mask;
+} BUTTONS[] = {
+    { "right", EMULATOR_BUTTON_RIGHT },
+    { "left", EMULATOR_BUTTON_LEFT },
+    { "up", EMULATOR_BUTTON_UP },
+    { "down", EMULATOR_BUTTON_DOWN },
+    { "a", EMULATOR_BUTTON_A },
+    { "b", EMULATOR_BUTTON_B },
+    { "select", EMULATOR_BUTTON_SELECT },
+    { "start", EMULATOR_BUTTON_START }
+};
+
+/* Parses "name@from-to", for example "start@300-305". */
+static int parse_press(const char *text, Press *press)
+{
+    const char *at = strchr(text, '@');
+    char *end = NULL;
+
+    if (at == NULL) {
+        return 0;
+    }
+
+    press->mask = 0;
+
+    for (size_t i = 0; i < sizeof(BUTTONS) / sizeof(BUTTONS[0]); i++) {
+        if (strlen(BUTTONS[i].name) == (size_t)(at - text) &&
+            strncmp(BUTTONS[i].name, text, (size_t)(at - text)) == 0) {
+            press->mask = BUTTONS[i].mask;
+        }
+    }
+
+    errno = 0;
+    press->from = strtoul(at + 1, &end, 10);
+
+    if (press->mask == 0 || errno != 0 || end == at + 1 || *end != '-') {
+        return 0;
+    }
+
+    press->to = strtoul(end + 1, &end, 10);
+
+    return errno == 0 && *end == '\0' && press->to > press->from;
+}
+
+static uint8_t held_at(const Press *presses, size_t count,
+                       unsigned long frame)
+{
+    uint8_t mask = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        if (frame >= presses[i].from && frame < presses[i].to) {
+            mask |= presses[i].mask;
+        }
+    }
+
+    return mask;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 3 || argc > 5) {
-        fprintf(stderr, "Usage: %s <rom> <out.png|out.raw> [frames] [scale]\n",
-                argv[0]);
+    const char *positional[4] = { NULL, NULL, NULL, NULL };
+    size_t positional_count = 0;
+    Press presses[MAX_PRESSES];
+    size_t press_count = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--press") == 0) {
+            if (i + 1 >= argc || press_count == MAX_PRESSES ||
+                !parse_press(argv[i + 1], &presses[press_count])) {
+                fprintf(stderr, "Invalid --press (use name@from-to)\n");
+                return 1;
+            }
+
+            press_count++;
+            i++;
+        } else if (positional_count < 4) {
+            positional[positional_count++] = argv[i];
+        } else {
+            positional_count = 5;
+        }
+    }
+
+    if (positional_count < 2 || positional_count > 4) {
+        fprintf(stderr,
+                "Usage: %s <rom> <out.png|out.raw> [frames] [scale] "
+                "[--press name@from-to]...\n", argv[0]);
         return 1;
     }
 
     unsigned long frames = DEFAULT_FRAMES;
     unsigned long scale = DEFAULT_SCALE;
 
-    if ((argc > 3 && !parse_count(argv[3], &frames)) ||
-        (argc > 4 && !parse_count(argv[4], &scale))) {
+    if ((positional_count > 2 && !parse_count(positional[2], &frames)) ||
+        (positional_count > 3 && !parse_count(positional[3], &scale))) {
         fprintf(stderr, "Invalid frame count or scale\n");
         return 1;
     }
@@ -228,32 +321,43 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    EmulatorStatus status = emulator_load_rom(emulator, argv[1]);
+    EmulatorStatus status = emulator_load_rom(emulator, positional[0]);
+    unsigned long applied_frame = (unsigned long)-1;
 
     while (status == EMULATOR_OK && emulator_frame_count(emulator) < frames) {
-        status = emulator_run_cycles(emulator, CYCLES_PER_FRAME_RUN);
+        unsigned long frame = (unsigned long)emulator_frame_count(emulator);
+
+        if (frame != applied_frame) {
+            emulator_set_buttons(emulator,
+                                 held_at(presses, press_count, frame));
+            applied_frame = frame;
+        }
+
+        status = emulator_run_cycles(emulator, CYCLES_PER_SLICE);
     }
 
     /* A CPU that stopped for good just leaves the picture as it is. */
     if (status != EMULATOR_OK && status != EMULATOR_STALLED) {
-        fprintf(stderr, "%s: %s\n", argv[1], emulator_status_string(status));
+        fprintf(stderr, "%s: %s\n", positional[0],
+                emulator_status_string(status));
         emulator_destroy(emulator);
         return 1;
     }
 
-    size_t name_length = strlen(argv[2]);
+    const char *out = positional[1];
+    size_t name_length = strlen(out);
     int is_png = name_length > 4 &&
-                 strcmp(argv[2] + name_length - 4, ".png") == 0;
+                 strcmp(out + name_length - 4, ".png") == 0;
     const uint8_t *shades = emulator_framebuffer(emulator);
     int ok = is_png
-        ? write_png(argv[2], shades, (unsigned)scale)
-        : write_raw(argv[2], shades);
+        ? write_png(out, shades, (unsigned)scale)
+        : write_raw(out, shades);
 
     if (!ok) {
-        fprintf(stderr, "Could not write %s\n", argv[2]);
+        fprintf(stderr, "Could not write %s\n", out);
     }
 
-    printf("%s: %llu frames, %llu cycles%s\n", argv[1],
+    printf("%s: %llu frames, %llu cycles%s\n", positional[0],
            (unsigned long long)emulator_frame_count(emulator),
            (unsigned long long)emulator_cycles(emulator),
            status == EMULATOR_STALLED ? " (CPU stalled)" : "");

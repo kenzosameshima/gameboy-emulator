@@ -1,8 +1,8 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port and a PPU, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
 
-The core is headless: the PPU draws into a framebuffer that a front end can read, but there is no joypad, OAM DMA or audio yet, so games cannot be played. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG.
+The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. There is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
 ## Current Architecture
 
@@ -23,6 +23,8 @@ main.c            tools/rom_test.c
               +-- Timer
               +-- Serial
               +-- Ppu (ppu.c, ppu_render.c)
+              +-- Dma (dma.c)
+              +-- Joypad (joypad.c)
 ```
 
 `main.c` and `tools/rom_test.c` only use the opaque `Emulator` API. `Emulator` owns the machine components by value. The Bus routes accesses to Cartridge, Memory, Timer, Serial, and the interrupt registers; the CPU uses the Bus for memory and takes the interrupt registers as its own dependency (`cpu_init(cpu, bus, interrupts)`), so it never reaches through the Bus.
@@ -124,6 +126,14 @@ The picture processing unit (`ppu.c`, `ppu_render.c`) owns VRAM, OAM, the LCD re
 - Scanline renderer: background with SCX/SCY wrap, both tile data addressing modes and both tile maps, window with its own line counter and WX < 7 handling, 8x8 and 8x16 sprites with flips, both palettes and the behind-background flag, DMG sprite priority (lower X first, then OAM order) and the ten-sprites-per-line limit. Shades 0 (lightest) to 3 (darkest) are available through `emulator_framebuffer()`.
 - `OAM DMA` writes use `ppu_oam_dma_write()`, which ignores the access lock like the hardware does.
 
+### OAM DMA
+
+Writing a page number XX to `FF46` copies the 160 bytes at `XX00` into OAM, one per M-cycle, starting one M-cycle after the write; `FF46` reads back the last page. While it copies it owns the CPU bus: reads below `FF00` give `0xFF` and writes are dropped, so only the I/O registers and high RAM are reachable (games run their wait loop from HRAM for this reason). Sources from `E000` up read the work RAM mirror. Writing again while copying restarts the transfer. The DMA reads VRAM and OAM even when the PPU is using them.
+
+### Joypad
+
+`FF00` (P1) selects the direction keys (bit 4 low) or the buttons (bit 5 low) and reads the selected group in bits 0-3, where 0 means pressed; bits 6-7 read 1. The front end reports the held set with `emulator_set_buttons()` using the `EMULATOR_BUTTON_*` bits. A key pressed in a selected group, or a group selected while a key is held, pulls a line low and requests the joypad interrupt, which also ends `STOP`. Because input can end `STOP` at any time, `STOP` is never reported as stalled.
+
 ## Memory Map Currently Used
 
 ```text
@@ -134,8 +144,10 @@ C000-DFFF   Work RAM
 E000-FDFF   Echo of C000-DDFF
 FE00-FE9F   OAM (sprite attributes)
 FF01-FF02   Serial
+FF00        Joypad (P1)
 FF04-FF07   Timer registers
 FF40-FF45   LCD registers (LCDC, STAT, SCY, SCX, LY, LYC)
+FF46        OAM DMA
 FF47-FF4B   LCD palettes and window (BGP, OBP0, OBP1, WY, WX)
 FF0F        Interrupt Flag (IF)
 FF80-FFFE   High RAM
@@ -168,6 +180,8 @@ src/timer.c             Timer implementation
 src/serial.c            Serial port
 src/ppu.c               PPU state machine, registers, interrupts, VRAM/OAM access
 src/ppu_render.c        PPU scanline renderer
+src/dma.c               OAM DMA
+src/joypad.c            Joypad register and interrupt
 tools/rom_test.c        Headless test ROM runner
 tools/frame_dump.c      Runs a ROM and saves the LCD picture as a PNG
 tests/                  Unit and integration tests
@@ -232,6 +246,12 @@ make build/frame_dump
 ./build/frame_dump roms/dmg-acid2.gb acid2.png 30
 ```
 
+Hold buttons by frame number to get past title screens (a button is held from the first frame up to, but not including, the second):
+
+```sh
+./build/frame_dump roms/Tetris.gb game.png 1100 3 --press start@400-405 --press start@480-485
+```
+
 ## Tests
 
 Run the unit and integration tests:
@@ -259,6 +279,9 @@ The test suite includes:
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
 - `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
+- `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a one-cycle start-up, what the CPU can reach while it runs, and restarts.
+- `test_joypad`: the P1 groups and active-low lines, which bit each key lands on, and when the joypad interrupt fires.
+- `test_emulator_input_dma`: real programs through the whole machine that poll the joypad, wake from `STOP` on a button, and start a DMA from a routine in high RAM.
 - `test_acid2`: runs `roms/dmg-acid2.gb` and compares the picture with the reference screenshot pixel by pixel (`tests/data/dmg-acid2-reference.txt`, from the dmg-acid2 repository, MIT licence).
 - `test_memory_bus`: Memory and Bus boundaries, echo RAM.
 - `test_emulator`, `test_emulator_run`: cycle budgets, stall detection, fault reporting, and serial output through the whole machine.
@@ -283,7 +306,7 @@ make build/rom_test
 ## Coverage and Limitations
 
 - The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
-- No joypad, OAM DMA, or audio.
+- No audio. OAM DMA blocks the whole range below `FF00` while it copies, which is the case for a source in ROM or RAM but more than a DMG blocks when the source is VRAM; its start timing is approximate (a one M-cycle delay), and the Mooneye DMA timing ROMs have not been run.
 - Only ROM-only, MBC1 and MBC3 cartridges. MBC2, MBC5 and others are rejected at load time.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
@@ -296,5 +319,5 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 ## Development Direction
 
 1. Validate against Mooneye acceptance ROMs. They signal a pass with `LD B,B` and the Fibonacci values in the registers, so the runner needs to detect that instead of serial text. Along the way: power-on DIV, `IF`/`TAC` upper bits, and the HALT bug.
-2. Joypad register and OAM DMA, so games can be played and sprites work in games that use DMA. A front end (for example SDL) belongs outside the core: it reads `emulator_framebuffer()` and would set the button state.
-3. Audio last.
+2. A front end (for example SDL) outside the core: it reads `emulator_framebuffer()` and calls `emulator_set_buttons()`.
+3. Battery saves, then audio.
