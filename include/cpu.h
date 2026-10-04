@@ -100,9 +100,9 @@ CpuCycles cpu_step(CPU *cpu);
  * can end the wait, so running further would spin forever.
  *
  * HALT ends when an enabled interrupt is requested, so it is stalled only
- * with every source masked in IE. STOP ends on a joypad request, and this
- * machine has no joypad yet, so nothing but an already requested joypad
- * interrupt can end it. This mirrors the wake rules in cpu_step().
+ * with every source masked in IE. STOP ends on a joypad request, and the
+ * front end can press a button at any time, so STOP is never stalled. This
+ * mirrors the wake rules in cpu_step().
  */
 bool cpu_is_stalled(const CPU *cpu);
 

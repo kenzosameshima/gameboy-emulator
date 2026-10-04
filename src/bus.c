@@ -3,6 +3,8 @@
 
 #include <bus.h>
 #include <cartridge.h>
+#include <dma.h>
+#include <joypad.h>
 #include <memory.h>
 #include <memory_map.h>
 #include <ppu.h>
@@ -19,6 +21,22 @@ static bool bus_is_serial_address(uint16_t address)
 {
     return address == SERIAL_SB_ADDRESS ||
            address == SERIAL_SC_ADDRESS;
+}
+
+static bool bus_is_dma_address(uint16_t address)
+{
+    return address == DMA_ADDRESS;
+}
+
+static bool bus_is_joypad_address(uint16_t address)
+{
+    return address == JOYPAD_ADDRESS;
+}
+
+/* While OAM DMA copies, the CPU reaches only the I/O registers and HRAM. */
+static bool bus_blocked_by_dma(const Bus *bus, uint16_t address)
+{
+    return bus->dma != NULL && address < 0xFF00 && dma_is_copying(bus->dma);
 }
 
 static bool bus_is_ppu_address(uint16_t address)
@@ -63,6 +81,8 @@ void bus_init(
     bus->timer = NULL;
     bus->serial = NULL;
     bus->ppu = NULL;
+    bus->dma = NULL;
+    bus->joypad = NULL;
 }
 
 void bus_attach_timer(Bus *bus, Timer *timer)
@@ -80,7 +100,17 @@ void bus_attach_ppu(Bus *bus, Ppu *ppu)
     bus->ppu = ppu;
 }
 
-uint8_t bus_read(Bus *bus, uint16_t address)
+void bus_attach_dma(Bus *bus, Dma *dma)
+{
+    bus->dma = dma;
+}
+
+void bus_attach_joypad(Bus *bus, Joypad *joypad)
+{
+    bus->joypad = joypad;
+}
+
+static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
 {
     if (address <= MEM_ROM_END) {
         return cartridge_read(bus->cartridge, address);
@@ -105,6 +135,14 @@ uint8_t bus_read(Bus *bus, uint16_t address)
         return bus->ppu == NULL ? 0xFF : ppu_read(bus->ppu, address);
     }
 
+    if (bus_is_joypad_address(address)) {
+        return bus->joypad == NULL ? 0xFF : joypad_read(bus->joypad);
+    }
+
+    if (bus_is_dma_address(address)) {
+        return bus->dma == NULL ? 0xFF : dma_read(bus->dma);
+    }
+
     if (bus_is_serial_address(address)) {
         return bus->serial == NULL ? 0xFF : serial_read(bus->serial, address);
     }
@@ -127,8 +165,30 @@ uint8_t bus_read(Bus *bus, uint16_t address)
     return 0xFF;
 }
 
+uint8_t bus_read(Bus *bus, uint16_t address)
+{
+    if (bus_blocked_by_dma(bus, address)) {
+        return 0xFF;
+    }
+
+    return bus_read_unlocked(bus, address);
+}
+
+uint8_t bus_dma_read(Bus *bus, uint16_t address)
+{
+    if (address >= MEM_ECHO_START) {
+        address = (uint16_t)(address - MEM_ECHO_OFFSET);
+    }
+
+    return bus_read_unlocked(bus, address);
+}
+
 void bus_write(Bus *bus, uint16_t address, uint8_t value)
 {
+    if (bus_blocked_by_dma(bus, address)) {
+        return;
+    }
+
     if (address <= MEM_ROM_END) {
         cartridge_write(bus->cartridge, address, value);
         return;
@@ -156,6 +216,20 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
     if (bus_is_ppu_address(address)) {
         if (bus->ppu != NULL) {
             ppu_write(bus->ppu, address, value);
+        }
+        return;
+    }
+
+    if (bus_is_joypad_address(address)) {
+        if (bus->joypad != NULL) {
+            joypad_write(bus->joypad, value);
+        }
+        return;
+    }
+
+    if (bus_is_dma_address(address)) {
+        if (bus->dma != NULL) {
+            dma_write(bus->dma, value);
         }
         return;
     }

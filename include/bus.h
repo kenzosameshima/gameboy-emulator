@@ -10,6 +10,8 @@ typedef struct Memory Memory;
 typedef struct Timer Timer;
 typedef struct Serial Serial;
 typedef struct Ppu Ppu;
+typedef struct Dma Dma;
+typedef struct Joypad Joypad;
 
 typedef struct Bus {
     Cartridge *cartridge;
@@ -18,6 +20,8 @@ typedef struct Bus {
     Timer *timer;
     Serial *serial;
     Ppu *ppu;
+    Dma *dma;
+    Joypad *joypad;
 } Bus;
 
 /*
@@ -26,16 +30,25 @@ typedef struct Bus {
  * A000-BFFF cartridge RAM
  * C000-DFFF work RAM
  * E000-FDFF echo RAM
+ * 8000-9FFF video RAM
+ * FE00-FE9F OAM
+ * FF00      joypad (P1)
  * FF01-FF02 serial registers
  * FF04-FF07 timer registers
- * 8000-9FFF video RAM, FE00-FE9F OAM and FF40-FF45, FF47-FF4B LCD registers
  * FF0F       interrupt flag (IF)
+ * FF40-FF45, FF47-FF4B LCD registers
+ * FF46      OAM DMA
  * FF80-FFFE high RAM
  * FFFF       interrupt enable (IE)
  * All other addresses currently return 0xFF or ignore writes.
  *
- * The timer, serial port and PPU are optional: without them their addresses
- * read 0xFF and ignore writes.
+
+ * The timer, serial port, PPU, DMA and joypad are optional: without them
+ * their addresses read 0xFF and ignore writes.
+ *
+ * While OAM DMA is copying, bus_read() and bus_write() reach only FF00-FFFF
+ * (the I/O registers and high RAM): everything below reads 0xFF and ignores
+ * writes, as on hardware. The DMA itself reads through bus_dma_read().
  */
 
 void bus_init(
@@ -48,8 +61,16 @@ void bus_init(
 void bus_attach_timer(Bus *bus, Timer *timer);
 void bus_attach_serial(Bus *bus, Serial *serial);
 void bus_attach_ppu(Bus *bus, Ppu *ppu);
+void bus_attach_dma(Bus *bus, Dma *dma);
+void bus_attach_joypad(Bus *bus, Joypad *joypad);
 
 uint8_t bus_read(Bus *bus, uint16_t address);
 void bus_write(Bus *bus, uint16_t address, uint8_t value);
+
+/*
+ * A read for the OAM DMA: not blocked by the transfer itself. Addresses from
+ * E000 up read the work RAM mirror.
+ */
+uint8_t bus_dma_read(Bus *bus, uint16_t address);
 
 #endif

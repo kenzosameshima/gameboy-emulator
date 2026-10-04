@@ -60,6 +60,8 @@ CORE_SRC = src/emulator.c \
 	       src/serial.c \
 	       src/ppu.c \
 	       src/ppu_render.c \
+	       src/dma.c \
+	       src/joypad.c \
 	       src/cartridge.c \
 	       src/mapper_rom_only.c \
 	       src/mapper_mbc1.c \

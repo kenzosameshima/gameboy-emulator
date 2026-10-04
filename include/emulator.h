@@ -14,6 +14,19 @@ enum {
 };
 
 
+/* Bits of the mask given to emulator_set_buttons(). */
+enum {
+    EMULATOR_BUTTON_RIGHT = 0x01,
+    EMULATOR_BUTTON_LEFT = 0x02,
+    EMULATOR_BUTTON_UP = 0x04,
+    EMULATOR_BUTTON_DOWN = 0x08,
+    EMULATOR_BUTTON_A = 0x10,
+    EMULATOR_BUTTON_B = 0x20,
+    EMULATOR_BUTTON_SELECT = 0x40,
+    EMULATOR_BUTTON_START = 0x80
+};
+
+
 /*
  * Result of emulator operations. EMULATOR_OK is zero, so callers that only
  * care about success can keep testing for non-zero.
@@ -129,8 +142,8 @@ bool emulator_is_running(
 
 
 /**
- * Checks whether the CPU is halted or stopped with no interrupt that
- * could ever wake it up (HALT with IE = 0, or STOP without joypad input).
+ * Checks whether the CPU is halted with no interrupt that could ever wake it
+ * up (HALT with IE = 0). STOP is never stalled: a button press ends it.
  */
 bool emulator_is_stalled(const Emulator *emulator);
 
@@ -173,6 +186,15 @@ const uint8_t *emulator_framebuffer(const Emulator *emulator);
 
 /** Frames completed (VBlank entered) since the last ROM load. */
 uint64_t emulator_frame_count(const Emulator *emulator);
+
+
+/**
+ * Reports which buttons are held down, as a mask of EMULATOR_BUTTON_* bits.
+ * Call it whenever the set changes; it replaces the previous set. Pressing
+ * a button requests the joypad interrupt (and ends STOP) as on hardware.
+ * The set is cleared by a ROM load.
+ */
+void emulator_set_buttons(Emulator *emulator, uint8_t pressed);
 
 
 /** Human-readable text for a status value. */

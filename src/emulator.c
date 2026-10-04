@@ -16,6 +16,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
 
     timer_step(&emulator->timer, cycles);
     serial_step(&emulator->serial, cycles);
+    dma_step(&emulator->dma, cycles);
     ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);
 }
@@ -31,6 +32,8 @@ static void emulator_reset(Emulator *emulator)
     interrupts_init(&emulator->interrupts);
     timer_init(&emulator->timer, &emulator->interrupts);
     ppu_init(&emulator->ppu, &emulator->interrupts);
+    dma_init(&emulator->dma, &emulator->bus, &emulator->ppu);
+    joypad_init(&emulator->joypad, &emulator->interrupts);
     serial_reset(&emulator->serial);
     cpu_init(&emulator->cpu, &emulator->bus, &emulator->interrupts);
     cpu_set_tick_handler(&emulator->cpu, emulator_tick, emulator);
@@ -72,6 +75,8 @@ Emulator *emulator_create(void)
     bus_attach_timer(&emulator->bus, &emulator->timer);
     bus_attach_serial(&emulator->bus, &emulator->serial);
     bus_attach_ppu(&emulator->bus, &emulator->ppu);
+    bus_attach_dma(&emulator->bus, &emulator->dma);
+    bus_attach_joypad(&emulator->bus, &emulator->joypad);
 
     emulator_reset(emulator);
 
@@ -220,6 +225,16 @@ uint64_t emulator_cycles(const Emulator *emulator)
     }
 
     return emulator->cycles;
+}
+
+
+void emulator_set_buttons(Emulator *emulator, uint8_t pressed)
+{
+    if (emulator == NULL) {
+        return;
+    }
+
+    joypad_set_pressed(&emulator->joypad, pressed);
 }
 
 
