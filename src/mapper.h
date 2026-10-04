@@ -31,10 +31,17 @@ typedef struct MapperOps {
     /* A000-BFFF. Reads 0xFF and ignores writes while RAM is unavailable. */
     uint8_t (*read_ram)(const Cartridge *cartridge, uint16_t address);
     void (*write_ram)(Cartridge *cartridge, uint16_t address, uint8_t value);
+
+    /*
+     * Advances time-driven mapper state by `cycles` T-cycles. NULL for
+     * mappers with nothing that runs off the CPU clock.
+     */
+    void (*step)(Cartridge *cartridge, CpuCycles cycles);
 } MapperOps;
 
 extern const MapperOps MAPPER_ROM_ONLY;
 extern const MapperOps MAPPER_MBC1;
+extern const MapperOps MAPPER_MBC3;
 
 /* The MapperOps for `mapper`. Never NULL. */
 const MapperOps *cartridge_mapper_ops(CartridgeMapper mapper);
