@@ -30,3 +30,20 @@ jobs:
       # that predate -std=c23.
       - name: make check
         run: make -j"$(nproc)" CC=${{ matrix.cc }} SANITIZE=${{ matrix.sanitize }} check
+
+  # The SDL front end builds against the core and starts headless: SDL's
+  # dummy video driver needs no display.
+  sdl:
+    name: SDL front end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev pkg-config
+
+      - name: Build
+        run: make -j"$(nproc)" sdl
+
+      - name: Run a few frames headless
+        run: SDL_VIDEODRIVER=dummy build/gameboy-sdl roms/dmg-acid2.gb --frames 60 --scale 2

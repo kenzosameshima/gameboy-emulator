@@ -74,6 +74,13 @@ CORE_LIB = $(BUILD)/libgbcore.a
 GAMEBOY = gameboy$(EXE)
 ROM_TEST = $(BUILD)/rom_test$(EXE)
 FRAME_DUMP = $(BUILD)/frame_dump$(EXE)
+SDL_FRONTEND = $(BUILD)/gameboy-sdl$(EXE)
+
+# The SDL front end is built on request (make sdl) and needs SDL2 and
+# pkg-config. SDL headers are included as system headers so the strict
+# warnings apply to our code only.
+SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null | sed "s/-I/-isystem /g")
+SDL_LIBS := $(shell pkg-config --libs sdl2 2>/dev/null)
 
 TEST_SRC = $(wildcard tests/test_*.c)
 TEST_BIN = $(TEST_SRC:tests/%.c=$(BUILD)/tests/%$(EXE))
@@ -82,6 +89,7 @@ ALL_OBJ = $(CORE_OBJ) \
 	      $(BUILD)/src/main.o \
 	      $(BUILD)/tools/rom_test.o \
 	      $(BUILD)/tools/frame_dump.o \
+	      $(BUILD)/frontend/sdl_main.o \
 	      $(TEST_SRC:%.c=$(BUILD)/%.o)
 
 # Test ROMs that run headless and report through the serial port.
@@ -90,7 +98,7 @@ ALL_OBJ = $(CORE_OBJ) \
 ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb
 
 
-.PHONY: all clean test rom-test check
+.PHONY: all clean test rom-test check sdl
 
 # Keep object files between runs so unchanged tests are not rebuilt.
 .SECONDARY:
@@ -109,6 +117,22 @@ $(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB)
 
 $(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB)
 	$(CC) $(LDFLAGS) $^ -o $@
+
+
+# SDL include flags apply to the front end only.
+$(BUILD)/frontend/sdl_main.o: CPPFLAGS += $(SDL_CFLAGS)
+
+
+$(SDL_FRONTEND): $(BUILD)/frontend/sdl_main.o $(CORE_LIB)
+	$(CC) $(LDFLAGS) $^ $(SDL_LIBS) -o $@
+
+
+sdl:
+ifeq ($(SDL_LIBS),)
+	@echo "SDL2 not found: install libsdl2-dev and pkg-config" >&2; exit 1
+else
+	@$(MAKE) --no-print-directory $(SDL_FRONTEND)
+endif
 
 
 $(CORE_LIB): $(CORE_OBJ)
