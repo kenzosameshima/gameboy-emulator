@@ -224,15 +224,15 @@ static void test_unsupported_cartridge_is_rejected(void)
 
     uint8_t *loaded_rom = cartridge.rom;
 
-    /* 0x19 is MBC5, which is not implemented. */
-    write_banked_rom(4, 0x19, 0x00);
+    /* 0x20 is MBC6, which is not implemented. */
+    write_banked_rom(4, 0x20, 0x00);
     uint8_t unsupported_type = 0;
 
     assert(
         cartridge_load(&cartridge, rom_path, &unsupported_type) ==
         CARTRIDGE_LOAD_UNSUPPORTED_TYPE
     );
-    assert(unsupported_type == 0x19);
+    assert(unsupported_type == 0x20);
 
     /* The type output is optional. */
     assert(

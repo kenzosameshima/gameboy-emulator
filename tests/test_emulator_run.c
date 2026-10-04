@@ -317,14 +317,14 @@ static void test_rom_load_failures(void)
 
     assert(!emulator_get_unsupported_cartridge_type(emulator, &type));
 
-    /* 0x19 is MBC5, which is not implemented. */
-    program.rom[CARTRIDGE_HEADER_TYPE] = 0x19;
+    /* 0x20 is MBC6, which is not implemented. */
+    program.rom[CARTRIDGE_HEADER_TYPE] = 0x20;
     test_write_file(rom_path, program.rom, ROM_SIZE);
 
     assert(emulator_load_rom(emulator, rom_path) ==
            EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE);
     assert(emulator_get_unsupported_cartridge_type(emulator, &type));
-    assert(type == 0x19);
+    assert(type == 0x20);
     assert(!emulator_get_unsupported_cartridge_type(emulator, NULL));
 
     /* The previously loaded ROM keeps running. */
@@ -342,7 +342,7 @@ static void test_rom_load_failures(void)
            EMULATOR_ERROR_ROM_LOAD_FAILED);
 
     /* A successful load clears the unsupported type too. */
-    program.rom[CARTRIDGE_HEADER_TYPE] = 0x19;
+    program.rom[CARTRIDGE_HEADER_TYPE] = 0x20;
     test_write_file(rom_path, program.rom, ROM_SIZE);
     assert(emulator_load_rom(emulator, rom_path) ==
            EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE);

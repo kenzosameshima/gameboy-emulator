@@ -18,6 +18,10 @@
 # Environment:
 #   MOONEYE_DIR     where the suite lives (default roms/mooneye)
 #   MOONEYE_CYCLES  T-cycle budget per ROM (default 40000000)
+#   MOONEYE_UPDATE  set to 1 to delete ROMs that now pass from the
+#                   expected-failures list
+#   MOONEYE_UPDATE  set to 1 to delete ROMs that now pass from the
+#                   expected-failures list
 
 set -u
 
@@ -124,6 +128,14 @@ if [ "${#unexpected_passes[@]}" -ne 0 ]; then
     echo
     echo "Now passing, remove from tools/mooneye-expected-failures.txt:"
     printf '  %s\n' "${unexpected_passes[@]}"
+
+    if [ "${MOONEYE_UPDATE:-0}" = 1 ]; then
+        for rel in "${unexpected_passes[@]}"; do
+            grep -vxF "$rel" "$expected_file" > "$expected_file.new"
+            mv "$expected_file.new" "$expected_file"
+        done
+        echo "Removed them from the list."
+    fi
 fi
 
 if [ "${#unexpected_failures[@]}" -ne 0 ]; then

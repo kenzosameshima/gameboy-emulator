@@ -1,6 +1,6 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
 
 The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played; there is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
@@ -18,7 +18,7 @@ main.c            tools/rom_test.c
               +-- CPU  (cpu.c, cpu_ops.c, cpu_cb.c, cpu_alu.c)
               +-- Bus
               +-- Memory
-              +-- Cartridge (ROM-only, MBC1, MBC3)   [mapper seam: src/mapper.h]
+              +-- Cartridge (ROM-only, MBC1, MBC2, MBC3, MBC5)   [mapper seam: src/mapper.h]
               +-- InterruptRegisters (interrupts.c)
               +-- Timer
               +-- Serial
@@ -64,10 +64,12 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 
 - ROM file loading with transactional replacement.
 - Header parsing for the cartridge type and RAM size.
-- A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC3) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
+- A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC2, MBC3, MBC5) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
 - ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size.
 - MBC3 (`0x0F`-`0x13`): 7-bit ROM banking (bank 0 remapped to 1), RAM banking, and the real-time clock on the timer variants (`0x0F`, `0x10`). The clock registers (seconds, minutes, hours, 9-bit day, halt, day carry) are read through the latch (write 0 then 1 to `6000-7FFF`), writing the seconds restarts the current second, and the clock runs off the CPU clock (4194304 T-cycles per second), so it is deterministic. Pokémon Red/Blue (`0x13`) loads and runs. The clock is not persisted.
-- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so an MBC5 game (`0x19`) is reported as an unsupported header type `0x19`.
+- MBC2 (`0x05`, `0x06`): a 4-bit ROM bank register and 512 half-bytes of built-in RAM, both programmed through `0000-3FFF` where address bit 8 picks the register; the RAM reads with the top nibble set and repeats through `A000-BFFF`.
+- MBC5 (`0x19`-`0x1E`): 9-bit ROM banking up to 8 MiB where bank 0 is a real choice for the switchable window, and RAM banking up to 128 KiB. Rumble is ignored.
+- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so an MBC6 game (`0x20`) is reported as an unsupported header type `0x20`.
 - Cartridge RAM is not persisted to disk.
 
 ### CPU
@@ -176,7 +178,9 @@ src/cartridge.c         ROM/RAM ownership, loading, header parsing, mapper dispa
 src/mapper.h            MapperOps: the seam between Cartridge and a mapper
 src/mapper_rom_only.c   ROM-only mapper
 src/mapper_mbc1.c       MBC1 mapper
+src/mapper_mbc2.c       MBC2 mapper
 src/mapper_mbc3.c       MBC3 mapper and real-time clock
+src/mapper_mbc5.c       MBC5 mapper
 src/timer.c             Timer implementation
 src/serial.c            Serial port
 src/ppu.c               PPU state machine, registers, interrupts, VRAM/OAM access
@@ -300,6 +304,8 @@ The test suite includes:
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
 - `test_serial`: register masks, transfer timing, restart, and the callback.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
+- `test_cartridge_mbc2`: the ROM bank and RAM enable registers selected by address bit 8, and the 4-bit built-in RAM with its echo.
+- `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
 - `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
@@ -339,7 +345,7 @@ make build/rom_test
 
 - The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
 - No audio. OAM DMA blocks the whole range below `FF00` while it copies, which is the case for a source in ROM or RAM but more than a DMG blocks when the source is VRAM; its start timing is approximate (a one M-cycle delay), and the Mooneye DMA timing ROMs have not been run.
-- Only ROM-only, MBC1 and MBC3 cartridges. MBC2, MBC5 and others are rejected at load time.
+- Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time. MBC1 multicart wiring is not detected.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
 - Interrupt dispatch does not model the `IE` write during the high-byte push.

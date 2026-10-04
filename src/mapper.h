@@ -41,7 +41,9 @@ typedef struct MapperOps {
 
 extern const MapperOps MAPPER_ROM_ONLY;
 extern const MapperOps MAPPER_MBC1;
+extern const MapperOps MAPPER_MBC2;
 extern const MapperOps MAPPER_MBC3;
+extern const MapperOps MAPPER_MBC5;
 
 /* The MapperOps for `mapper`. Never NULL. */
 const MapperOps *cartridge_mapper_ops(CartridgeMapper mapper);

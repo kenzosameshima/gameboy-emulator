@@ -14,11 +14,22 @@ enum {
     CARTRIDGE_TYPE_MBC1 = 0x01,
     CARTRIDGE_TYPE_MBC1_RAM = 0x02,
     CARTRIDGE_TYPE_MBC1_RAM_BATTERY = 0x03,
+    CARTRIDGE_TYPE_MBC2 = 0x05,
+    CARTRIDGE_TYPE_MBC2_BATTERY = 0x06,
     CARTRIDGE_TYPE_MBC3_TIMER_BATTERY = 0x0F,
     CARTRIDGE_TYPE_MBC3_TIMER_RAM_BATTERY = 0x10,
     CARTRIDGE_TYPE_MBC3 = 0x11,
     CARTRIDGE_TYPE_MBC3_RAM = 0x12,
-    CARTRIDGE_TYPE_MBC3_RAM_BATTERY = 0x13
+    CARTRIDGE_TYPE_MBC3_RAM_BATTERY = 0x13,
+    CARTRIDGE_TYPE_MBC5 = 0x19,
+    CARTRIDGE_TYPE_MBC5_RAM = 0x1A,
+    CARTRIDGE_TYPE_MBC5_RAM_BATTERY = 0x1B,
+    CARTRIDGE_TYPE_MBC5_RUMBLE = 0x1C,
+    CARTRIDGE_TYPE_MBC5_RUMBLE_RAM = 0x1D,
+    CARTRIDGE_TYPE_MBC5_RUMBLE_RAM_BATTERY = 0x1E,
+
+    /* MBC2 has 512 half-bytes of RAM inside the chip, whatever the header says. */
+    MBC2_RAM_SIZE = 0x200
 };
 
 static size_t cartridge_ram_size_from_header(uint8_t code)
@@ -32,6 +43,12 @@ static size_t cartridge_ram_size_from_header(uint8_t code)
 
         case 0x03:
             return 0x8000;
+
+        case 0x04:
+            return 0x20000;
+
+        case 0x05:
+            return 0x10000;
 
         default:
             return 0;
@@ -64,6 +81,27 @@ static bool cartridge_configure(
         case CARTRIDGE_TYPE_MBC1_RAM:
         case CARTRIDGE_TYPE_MBC1_RAM_BATTERY:
             *mapper = CARTRIDGE_MAPPER_MBC1;
+            *ram_size = cartridge_ram_size_from_header(
+                rom[CARTRIDGE_HEADER_RAM_SIZE]
+            );
+            return true;
+
+        case CARTRIDGE_TYPE_MBC2:
+        case CARTRIDGE_TYPE_MBC2_BATTERY:
+            *mapper = CARTRIDGE_MAPPER_MBC2;
+            *ram_size = MBC2_RAM_SIZE;
+            return true;
+
+        case CARTRIDGE_TYPE_MBC5:
+        case CARTRIDGE_TYPE_MBC5_RUMBLE:
+            *mapper = CARTRIDGE_MAPPER_MBC5;
+            return true;
+
+        case CARTRIDGE_TYPE_MBC5_RAM:
+        case CARTRIDGE_TYPE_MBC5_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC5_RUMBLE_RAM:
+        case CARTRIDGE_TYPE_MBC5_RUMBLE_RAM_BATTERY:
+            *mapper = CARTRIDGE_MAPPER_MBC5;
             *ram_size = cartridge_ram_size_from_header(
                 rom[CARTRIDGE_HEADER_RAM_SIZE]
             );
@@ -103,7 +141,9 @@ static size_t cartridge_rom_bank_mask(size_t rom_size)
 static const MapperOps *const MAPPER_TABLE[] = {
     [CARTRIDGE_MAPPER_NONE] = &MAPPER_ROM_ONLY,
     [CARTRIDGE_MAPPER_MBC1] = &MAPPER_MBC1,
-    [CARTRIDGE_MAPPER_MBC3] = &MAPPER_MBC3
+    [CARTRIDGE_MAPPER_MBC2] = &MAPPER_MBC2,
+    [CARTRIDGE_MAPPER_MBC3] = &MAPPER_MBC3,
+    [CARTRIDGE_MAPPER_MBC5] = &MAPPER_MBC5
 };
 
 const MapperOps *cartridge_mapper_ops(CartridgeMapper mapper)

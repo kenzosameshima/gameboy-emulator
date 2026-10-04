@@ -2,7 +2,8 @@
 # relative to the suite. tools/mooneye.sh exits 1 only for a failure that is
 # not listed here, and reports listed ROMs that now pass: delete their lines.
 #
-# Baseline when the runner was added: 45 of 94 DMG ROMs pass.
+# Baseline when the runner was added: 45 of 94 DMG ROMs pass. MBC2 and MBC5
+# support brought it to 61.
 acceptance/add_sp_e_timing.gb
 acceptance/bits/unused_hwio-GS.gb
 acceptance/boot_div-dmgABCmgb.gb
@@ -18,7 +19,6 @@ acceptance/interrupts/ie_push.gb
 acceptance/jp_cc_timing.gb
 acceptance/jp_timing.gb
 acceptance/ld_hl_sp_e_timing.gb
-acceptance/oam_dma/sources-GS.gb
 acceptance/oam_dma_restart.gb
 acceptance/oam_dma_start.gb
 acceptance/oam_dma_timing.gb
@@ -37,18 +37,3 @@ acceptance/serial/boot_sclk_align-dmgABCmgb.gb
 acceptance/timer/tima_write_reloading.gb
 acceptance/timer/tma_write_reloading.gb
 emulator-only/mbc1/multicart_rom_8Mb.gb
-emulator-only/mbc2/bits_ramg.gb
-emulator-only/mbc2/bits_romb.gb
-emulator-only/mbc2/bits_unused.gb
-emulator-only/mbc2/ram.gb
-emulator-only/mbc2/rom_1Mb.gb
-emulator-only/mbc2/rom_2Mb.gb
-emulator-only/mbc2/rom_512kb.gb
-emulator-only/mbc5/rom_16Mb.gb
-emulator-only/mbc5/rom_1Mb.gb
-emulator-only/mbc5/rom_2Mb.gb
-emulator-only/mbc5/rom_32Mb.gb
-emulator-only/mbc5/rom_4Mb.gb
-emulator-only/mbc5/rom_512kb.gb
-emulator-only/mbc5/rom_64Mb.gb
-emulator-only/mbc5/rom_8Mb.gb
