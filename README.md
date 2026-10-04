@@ -66,11 +66,11 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 - Header parsing for the cartridge type and RAM size.
 - A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC2, MBC3, MBC5) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
 - ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size. A 1 MiB ROM with the Nintendo logo at the start of at least two of its 256 KiB sections is treated as a multicart: 4 bank bits inside a game and the game picker shifted by 4.
-- MBC3 (`0x0F`-`0x13`): 7-bit ROM banking (bank 0 remapped to 1), RAM banking, and the real-time clock on the timer variants (`0x0F`, `0x10`). The clock registers (seconds, minutes, hours, 9-bit day, halt, day carry) are read through the latch (write 0 then 1 to `6000-7FFF`), writing the seconds restarts the current second, and the clock runs off the CPU clock (4194304 T-cycles per second), so it is deterministic. Pokémon Red/Blue (`0x13`) loads and runs. The clock is not persisted.
+- MBC3 (`0x0F`-`0x13`): 7-bit ROM banking (bank 0 remapped to 1), RAM banking, and the real-time clock on the timer variants (`0x0F`, `0x10`). The clock registers (seconds, minutes, hours, 9-bit day, halt, day carry) are read through the latch (write 0 then 1 to `6000-7FFF`), writing the seconds restarts the current second, and the clock runs off the CPU clock (4194304 T-cycles per second), so it is deterministic. Pokémon Red/Blue (`0x13`) loads and runs. The clock is part of the battery save.
 - MBC2 (`0x05`, `0x06`): a 4-bit ROM bank register and 512 half-bytes of built-in RAM, both programmed through `0000-3FFF` where address bit 8 picks the register; the RAM reads with the top nibble set and repeats through `A000-BFFF`.
 - MBC5 (`0x19`-`0x1E`): 9-bit ROM banking up to 8 MiB where bank 0 is a real choice for the switchable window, and RAM banking up to 128 KiB. Rumble is ignored.
 - Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so an MBC6 game (`0x20`) is reported as an unsupported header type `0x20`.
-- Cartridge RAM is not persisted to disk.
+- Battery saves: `emulator_save_battery()` and `emulator_load_battery()` keep the cartridge RAM of a battery cartridge (types `0x03`, `0x06`, `0x0F`, `0x10`, `0x13`, `0x1B` and `0x1E`) in a raw dump that other emulators read too, plus the 48-byte clock footer that BGB and VBA-M use for MBC3 timer cartridges. Loading adds the time that passed since the save to a running clock. The core has no clock of its own, so the caller passes the time in. A save is written to a temporary file and renamed into place, and a load that fails changes nothing.
 
 ### CPU
 
@@ -175,6 +175,7 @@ src/bus.c               Address routing
 src/interrupts.c        IF/IE registers and interrupt requests
 src/memory.c            WRAM and HRAM
 src/cartridge.c         ROM/RAM ownership, loading, header parsing, mapper dispatch
+src/cartridge_save.c    Battery saves: the RAM dump and the mapper's extra state
 src/mapper.h            MapperOps: the seam between Cartridge and a mapper
 src/mapper_rom_only.c   ROM-only mapper
 src/mapper_mbc1.c       MBC1 mapper
@@ -244,7 +245,7 @@ make sdl
 | Right `Shift` or `Backspace` | Select |
 | `Esc` | Quit |
 
-Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display). The window can be resized and keeps its shape. There is no audio, no save file and no pause key yet.
+Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display) and `--no-save`. The window can be resized and keeps its shape. There is no audio and no pause key yet. A cartridge with a battery keeps its RAM (and an MBC3 clock) in a `.sav` file next to the ROM, with the same name: it is loaded at start, written every 30 seconds and when the program ends. `--no-save` turns that off.
 
 ### Command line
 
@@ -309,6 +310,8 @@ The test suite includes:
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
 - `test_cartridge_mbc2`: the ROM bank and RAM enable registers selected by address bit 8, and the 4-bit built-in RAM with its echo.
 - `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
+- `test_cartridge_save`: which cartridges have a battery, the RAM dump and the clock footer byte for byte, failed loads that change nothing, and the clock catching up for the time the console was off (including the day counter wrapping and a halted clock).
+- `test_emulator_battery`: a program writes cartridge RAM, the emulator saves it, and a fresh emulator loads it and a second program reads it back.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
 - `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
@@ -349,7 +352,6 @@ make build/rom_test
 - The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and the window adds no dots to drawing. The LY = 153 early-zero quirk, the STAT write quirk and the OAM bug are not modelled.
 - No audio. A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
-- Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
 - Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
 - No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
@@ -359,4 +361,4 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 ## Development Direction
 
 1. Close the remaining Mooneye failures (93 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the HALT bug, and the window's effect on mode 3 length.
-2. Battery saves, then audio.
+2. Audio.
