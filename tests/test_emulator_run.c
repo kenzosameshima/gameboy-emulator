@@ -81,6 +81,38 @@ static void test_cycle_budget(void)
     emulator_destroy(emulator);
 }
 
+/*
+ * A stop request can arrive just before the run loop starts, for example
+ * from a signal handler or another thread. It must not be lost.
+ */
+static void test_stop_before_run_is_not_lost(void)
+{
+    Program program = {0};
+    const uint8_t spin[] = { 0x18, 0xFE }; /* JR -2 */
+
+    place(&program, 0x0100, spin, sizeof(spin));
+
+    Emulator *emulator = load(&program);
+
+    emulator_stop(emulator);
+
+    assert(emulator_run_cycles(emulator, 1000) == EMULATOR_OK);
+    assert(emulator_cycles(emulator) == 0);
+    assert(!emulator_is_running(emulator));
+
+    /* The run consumed the request, so the next one runs normally. */
+    assert(emulator_run_cycles(emulator, 1000) == EMULATOR_OK);
+    assert(emulator_cycles(emulator) >= 1000);
+
+    /* Loading a ROM starts a new machine and drops a pending request. */
+    emulator_stop(emulator);
+    assert(emulator_load_rom(emulator, rom_path) == EMULATOR_OK);
+    assert(emulator_run_cycles(emulator, 1000) == EMULATOR_OK);
+    assert(emulator_cycles(emulator) >= 1000);
+
+    emulator_destroy(emulator);
+}
+
 static void test_run_with_invalid_state(void)
 {
     assert(emulator_run(NULL) == EMULATOR_ERROR_INVALID_ARGUMENT);
@@ -342,6 +374,7 @@ static void test_status_strings(void)
 int main(void)
 {
     test_cycle_budget();
+    test_stop_before_run_is_not_lost();
     test_run_with_invalid_state();
     test_rom_load_failures();
     test_halt_without_wakeup_stalls();

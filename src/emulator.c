@@ -34,6 +34,7 @@ static void emulator_reset(Emulator *emulator)
 
     emulator->cycles = 0;
     atomic_store(&emulator->running, false);
+    atomic_store(&emulator->stop_requested, false);
 }
 
 
@@ -52,6 +53,7 @@ Emulator *emulator_create(void)
      * only keeps references to them.
      */
     atomic_init(&emulator->running, false);
+    atomic_init(&emulator->stop_requested, false);
     emulator->unsupported_cartridge = false;
     emulator->unsupported_cartridge_type = 0;
     cartridge_init(&emulator->cartridge);
@@ -148,7 +150,7 @@ EmulatorStatus emulator_run_cycles(Emulator *emulator, uint64_t cycles)
 
     atomic_store(&emulator->running, true);
 
-    while (atomic_load(&emulator->running) &&
+    while (!atomic_load(&emulator->stop_requested) &&
            emulator->cycles - start < cycles) {
         status = emulator_step(emulator);
 
@@ -162,7 +164,9 @@ EmulatorStatus emulator_run_cycles(Emulator *emulator, uint64_t cycles)
         }
     }
 
+    /* The run that observed a stop request consumes it. */
     atomic_store(&emulator->running, false);
+    atomic_store(&emulator->stop_requested, false);
 
     return status;
 }
@@ -180,6 +184,7 @@ void emulator_stop(Emulator *emulator)
         return;
     }
 
+    atomic_store(&emulator->stop_requested, true);
     atomic_store(&emulator->running, false);
 }
 

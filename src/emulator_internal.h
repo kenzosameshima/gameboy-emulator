@@ -29,6 +29,9 @@ struct Emulator {
     uint8_t unsupported_cartridge_type;
 
     atomic_bool running;
+
+    /* Set by emulator_stop(), cleared by the run that ends because of it. */
+    atomic_bool stop_requested;
 };
 
 /* emulator_stop() is documented as async-signal-safe, which needs this. */

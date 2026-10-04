@@ -50,7 +50,7 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 
 - Opaque `Emulator` type.
 - Create, ROM load, step, run, stop, and destroy operations.
-- `emulator_run_cycles(n)` runs for a T-cycle budget. `emulator_run()` runs until stopped, stalled, or an error occurs. `emulator_stop()` is async-signal-safe and can be called from the serial callback.
+- `emulator_run_cycles(n)` runs for a T-cycle budget. `emulator_run()` runs until stopped, stalled, or an error occurs. `emulator_stop()` is async-signal-safe and can be called from the serial callback. A request made before the loop starts is not lost: the next run returns immediately and consumes it.
 - Typed results (`EmulatorStatus`) instead of bare integers. `EMULATOR_OK` is zero.
 - An undefined opcode reports the exact instruction through `emulator_get_fault()` (PC of the opcode and the opcode itself).
 - `EMULATOR_STALLED` reports a CPU halted with nothing able to wake it (HALT with `IE = 0`, or STOP), instead of spinning forever.

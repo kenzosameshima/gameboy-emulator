@@ -100,6 +100,11 @@ EmulatorStatus emulator_run(Emulator *emulator);
  * Requests the emulation loop to stop. Safe to call from a serial callback,
  * a signal handler or another thread.
  *
+ * The request is not lost if the loop has not started yet: the next
+ * emulator_run*() call returns EMULATOR_OK without executing anything. The
+ * run that observes the request consumes it, and emulator_load_rom() drops
+ * a pending one.
+ *
  * @param emulator Emulator instance.
  */
 void emulator_stop(Emulator *emulator);
