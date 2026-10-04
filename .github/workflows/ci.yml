@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.cc }}${{ matrix.sanitize && ' + sanitizers' || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        # SANITIZE=1 builds with AddressSanitizer and UndefinedBehaviorSanitizer.
+        sanitize: ['', '1']
+    steps:
+      - uses: actions/checkout@v4
+
+      # Unit tests plus the Blargg test ROMs, with the makefile's strict
+      # warnings as errors. The makefile falls back to -std=c2x on compilers
+      # that predate -std=c23.
+      - name: make check
+        run: make -j"$(nproc)" CC=${{ matrix.cc }} SANITIZE=${{ matrix.sanitize }} check
