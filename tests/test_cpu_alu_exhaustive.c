@@ -468,10 +468,9 @@ static void test_sp_plus_offset(TestMachine *m)
                     );
                     uint16_t expected =
                         (uint16_t)(sp + (int8_t)(uint8_t)offset);
-                    uint16_t got = load_hl
-                        ? (uint16_t)((m->cpu.registers.h << 8) |
-                                     m->cpu.registers.l)
-                        : m->cpu.registers.sp;
+                    uint16_t got = (uint16_t)(load_hl
+                        ? (m->cpu.registers.h << 8) | m->cpu.registers.l
+                        : m->cpu.registers.sp);
 
                     EXPECT(got == expected && m->cpu.registers.f == flags,
                            "%s SP=%04X e8=%02X: got %04X F=%02X, "
