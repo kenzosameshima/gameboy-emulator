@@ -34,4 +34,13 @@ void interrupts_acknowledge(InterruptRegisters *interrupts, uint8_t mask);
 /* Requested and enabled interrupts: IF & IE & INTERRUPT_VALID_MASK. */
 uint8_t interrupts_pending(const InterruptRegisters *interrupts);
 
+/*
+ * The highest-priority source in `pending` (VBlank first, Joypad last), as a
+ * single-bit mask, or 0 if none of the five sources is set.
+ */
+uint8_t interrupts_highest_priority(uint8_t pending);
+
+/* Jump vector of a single-bit source mask: 0x40 + 8 * bit number. */
+uint16_t interrupts_vector(uint8_t source);
+
 #endif

@@ -24,7 +24,7 @@ main.c            tools/rom_test.c
               +-- Serial
 ```
 
-`main.c` and `tools/rom_test.c` only use the opaque `Emulator` API. `Emulator` owns the machine components by value. The Bus routes accesses to Cartridge, Memory, Timer, Serial, and the interrupt registers; the CPU only knows the Bus.
+`main.c` and `tools/rom_test.c` only use the opaque `Emulator` API. `Emulator` owns the machine components by value. The Bus routes accesses to Cartridge, Memory, Timer, Serial, and the interrupt registers; the CPU uses the Bus for memory and takes the interrupt registers as its own dependency (`cpu_init(cpu, bus, interrupts)`), so it never reaches through the Bus.
 
 ### Timing model
 
@@ -53,7 +53,7 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 - `emulator_run_cycles(n)` runs for a T-cycle budget. `emulator_run()` runs until stopped, stalled, or an error occurs. `emulator_stop()` is async-signal-safe and can be called from the serial callback. A request made before the loop starts is not lost: the next run returns immediately and consumes it.
 - Typed results (`EmulatorStatus`) instead of bare integers. `EMULATOR_OK` is zero.
 - An undefined opcode reports the exact instruction through `emulator_get_fault()` (PC of the opcode and the opcode itself).
-- `EMULATOR_STALLED` reports a CPU halted with nothing able to wake it (HALT with `IE = 0`, or STOP), instead of spinning forever.
+- `EMULATOR_STALLED` reports a CPU halted with nothing able to wake it (HALT with `IE = 0`, or STOP), instead of spinning forever. The rule lives in `cpu_is_stalled()`, next to the wake rules in `cpu_step()`.
 - `emulator_set_serial_output()` receives every byte the program sends over the serial port.
 - Loading a ROM resets CPU, Memory, Timer, Serial, interrupt state, and the cycle counter. A failed load preserves the previously loaded Cartridge.
 
@@ -86,7 +86,7 @@ Implemented interrupt registers and sources:
 | Serial | 3 | `0x0058` |
 | Joypad | 4 | `0x0060` |
 
-`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): priority selection, IME clearing, PC push, selective IF clearing, and the vector load.
+`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): priority selection, IME clearing, PC push, selective IF clearing, and the vector load. Priority and vectors are pure functions in `interrupts.c` (`interrupts_highest_priority()`, `interrupts_vector()`).
 
 HALT behavior distinguishes:
 

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include <cycles.h>
+#include <interrupts.h>
 
 typedef struct Bus Bus;
 
@@ -58,6 +59,7 @@ typedef struct {
     Registers registers;
 
     Bus *bus;
+    InterruptRegisters *interrupts;
 
     bool halted;
     bool stopped;
@@ -75,8 +77,12 @@ typedef struct {
     uint8_t fault_opcode;
 } CPU;
 
-/* Resets the CPU to the post-boot state. Clears the tick handler. */
-void cpu_init(CPU *cpu, Bus *bus);
+/*
+ * Resets the CPU to the post-boot state. Clears the tick handler.
+ *
+ * `interrupts` must be the same registers the Bus maps at FF0F and FFFF.
+ */
+void cpu_init(CPU *cpu, Bus *bus, InterruptRegisters *interrupts);
 
 void cpu_set_tick_handler(CPU *cpu, CpuTickFn tick, void *context);
 
@@ -88,5 +94,16 @@ void cpu_set_tick_handler(CPU *cpu, CpuTickFn tick, void *context);
  * after all the earlier M-cycles of the same instruction.
  */
 CpuCycles cpu_step(CPU *cpu);
+
+/*
+ * True while the CPU is waiting in HALT or STOP and nothing in this machine
+ * can end the wait, so running further would spin forever.
+ *
+ * HALT ends when an enabled interrupt is requested, so it is stalled only
+ * with every source masked in IE. STOP ends on a joypad request, and this
+ * machine has no joypad yet, so nothing but an already requested joypad
+ * interrupt can end it. This mirrors the wake rules in cpu_step().
+ */
+bool cpu_is_stalled(const CPU *cpu);
 
 #endif

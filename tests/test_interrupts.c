@@ -25,7 +25,7 @@ static void setup_cpu(
     interrupts->interrupt_flag = 0;
     interrupts->interrupt_enable = 0;
     bus_init(bus, cartridge, memory, interrupts);
-    cpu_init(cpu, bus);
+    cpu_init(cpu, bus, bus->interrupts);
 }
 
 static void cleanup_cpu(Cartridge *cartridge)
@@ -82,7 +82,7 @@ static void test_halt_wakeup_without_service(void)
     assert(cpu.halted);
     assert(cpu.step_status == CPU_STEP_HALTED);
 
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
     cartridge.rom[0x0100] = 0x76;
     assert(cpu_step(&cpu) == 4);
     assert(cpu.halted);
@@ -237,7 +237,7 @@ static void test_di_ei_reti(void)
     assert(!cpu.ime);
     assert(cpu.registers.pc == 0x0101);
 
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
     cartridge.rom[0x0100] = 0xFB;
     cartridge.rom[0x0101] = 0x00;
     assert(cpu_step(&cpu) == 4);
@@ -250,7 +250,7 @@ static void test_di_ei_reti(void)
     assert(cpu.ime_enable_delay == 0);
     assert(cpu.registers.pc == 0x0102);
 
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
     cpu.registers.sp = 0xC100;
     cartridge.rom[0x0100] = 0xFB;
     cartridge.rom[0x0101] = 0x00;
@@ -272,7 +272,7 @@ static void test_di_ei_reti(void)
     assert(bus_read(&bus, 0xC0FE) == 0x02);
     assert(bus_read(&bus, 0xC0FF) == 0x01);
 
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
     cpu.registers.sp = 0xFFFC;
     memory_write(&memory, 0xFFFC, 0x78);
     memory_write(&memory, 0xFFFD, 0x56);
@@ -285,7 +285,7 @@ static void test_di_ei_reti(void)
     assert(cpu.ime);
     assert(cpu.ime_enable_delay == 0);
 
-    cpu_init(&cpu, &bus);
+    cpu_init(&cpu, &bus, bus.interrupts);
     cpu.registers.sp = 0xC100;
     cpu.ime = true;
     bus_write(&bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
@@ -309,6 +309,83 @@ static void test_di_ei_reti(void)
     cleanup_cpu(&cartridge);
 }
 
+/*
+ * Priority is by bit: VBlank beats LCD STAT beats Timer beats Serial beats
+ * Joypad. Vectors are 0x40 + 8 * bit. Bits above the five sources are
+ * not interrupts.
+ */
+static void test_priority_and_vectors(void)
+{
+    static const struct {
+        uint8_t pending;
+        uint8_t highest;
+    } cases[] = {
+        { 0x00, 0x00 },
+        { 0xE0, 0x00 },
+        { INTERRUPT_VBLANK, INTERRUPT_VBLANK },
+        { INTERRUPT_LCD_STAT, INTERRUPT_LCD_STAT },
+        { INTERRUPT_TIMER, INTERRUPT_TIMER },
+        { INTERRUPT_SERIAL, INTERRUPT_SERIAL },
+        { INTERRUPT_JOYPAD, INTERRUPT_JOYPAD },
+        { 0x1F, INTERRUPT_VBLANK },
+        { 0x1E, INTERRUPT_LCD_STAT },
+        { 0x1C, INTERRUPT_TIMER },
+        { 0x18, INTERRUPT_SERIAL },
+        { 0x14, INTERRUPT_TIMER },
+        { 0xE4, INTERRUPT_TIMER },
+        { 0xFF, INTERRUPT_VBLANK }
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        assert(interrupts_highest_priority(cases[i].pending) ==
+               cases[i].highest);
+    }
+
+    assert(interrupts_vector(INTERRUPT_VBLANK) == 0x0040);
+    assert(interrupts_vector(INTERRUPT_LCD_STAT) == 0x0048);
+    assert(interrupts_vector(INTERRUPT_TIMER) == 0x0050);
+    assert(interrupts_vector(INTERRUPT_SERIAL) == 0x0058);
+    assert(interrupts_vector(INTERRUPT_JOYPAD) == 0x0060);
+}
+
+/*
+ * A CPU is stalled when it is waiting in HALT or STOP and nothing in this
+ * machine can ever end the wait.
+ */
+static void test_cpu_is_stalled(void)
+{
+    CPU cpu;
+    Bus bus;
+    Memory memory;
+    Cartridge cartridge;
+    InterruptRegisters interrupts;
+    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+
+    assert(!cpu_is_stalled(&cpu));
+
+    /* HALT ends on IF & IE, so with every source masked it never ends. */
+    cpu.halted = true;
+    assert(cpu_is_stalled(&cpu));
+
+    interrupts.interrupt_enable = INTERRUPT_TIMER;
+    assert(!cpu_is_stalled(&cpu));
+
+    /* Bits above the five sources do not count as interrupt sources. */
+    interrupts.interrupt_enable = 0xE0;
+    assert(cpu_is_stalled(&cpu));
+
+    /* STOP ends only on a joypad request, and there is no joypad yet. */
+    cpu.halted = false;
+    cpu.stopped = true;
+    interrupts.interrupt_enable = 0;
+    assert(cpu_is_stalled(&cpu));
+
+    interrupts.interrupt_flag = INTERRUPT_JOYPAD;
+    assert(!cpu_is_stalled(&cpu));
+
+    cleanup_cpu(&cartridge);
+}
+
 static void test_pending_interrupts_and_halt(void)
 {
     test_halt_wakeup_without_service();
@@ -328,6 +405,8 @@ static void test_pending_interrupts_and_halt(void)
 int main(void)
 {
     test_interrupt_registers();
+    test_priority_and_vectors();
+    test_cpu_is_stalled();
     test_pending_interrupts_and_halt();
 
     printf("Interrupt tests passed!\n");

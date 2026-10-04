@@ -21,7 +21,7 @@ static void cpu_service_interrupt(CPU *cpu, uint8_t pending);
  * CPU
  */
 
-void cpu_init(CPU *cpu, Bus *bus)
+void cpu_init(CPU *cpu, Bus *bus, InterruptRegisters *interrupts)
 {
     cpu->registers.a = 0x01;
     cpu->registers.f = 0xB0;
@@ -39,6 +39,7 @@ void cpu_init(CPU *cpu, Bus *bus)
     cpu->registers.pc = 0x0100;
 
     cpu->bus = bus;
+    cpu->interrupts = interrupts;
 
     cpu->halted = false;
     cpu->stopped = false;
@@ -143,7 +144,7 @@ CpuCycles cpu_step(CPU *cpu)
 
     cpu->step_cycles = 0;
 
-    uint8_t pending = interrupts_pending(cpu->bus->interrupts);
+    uint8_t pending = interrupts_pending(cpu->interrupts);
 
     if (cpu->ime && pending != 0) {
         cpu_service_interrupt(cpu, pending);
@@ -164,7 +165,7 @@ CpuCycles cpu_step(CPU *cpu)
 
     if (cpu->stopped) {
         /* Only a joypad line going low ends STOP. */
-        if ((cpu->bus->interrupts->interrupt_flag & INTERRUPT_JOYPAD) != 0) {
+        if ((cpu->interrupts->interrupt_flag & INTERRUPT_JOYPAD) != 0) {
             cpu->stopped = false;
         } else {
             cpu->step_status = CPU_STEP_STOPPED;
@@ -200,6 +201,23 @@ CpuCycles cpu_step(CPU *cpu)
     return cpu->step_cycles;
 }
 
+bool cpu_is_stalled(const CPU *cpu)
+{
+    if (cpu->halted) {
+        /* HALT only ends when IF & IE is non-zero. */
+        return (cpu->interrupts->interrupt_enable &
+                INTERRUPT_VALID_MASK) == 0;
+    }
+
+    if (cpu->stopped) {
+        /* Only a joypad request ends STOP, and nothing raises one yet. */
+        return (cpu->interrupts->interrupt_flag &
+                INTERRUPT_JOYPAD) == 0;
+    }
+
+    return false;
+}
+
 static void cpu_advance_ime_delay(CPU *cpu)
 {
     if (cpu->ime_enable_delay == 0) {
@@ -219,25 +237,8 @@ static void cpu_advance_ime_delay(CPU *cpu)
  */
 static void cpu_service_interrupt(CPU *cpu, uint8_t pending)
 {
-    uint8_t interrupt_mask;
-    uint16_t vector;
-
-    if ((pending & INTERRUPT_VBLANK) != 0) {
-        interrupt_mask = INTERRUPT_VBLANK;
-        vector = 0x0040;
-    } else if ((pending & INTERRUPT_LCD_STAT) != 0) {
-        interrupt_mask = INTERRUPT_LCD_STAT;
-        vector = 0x0048;
-    } else if ((pending & INTERRUPT_TIMER) != 0) {
-        interrupt_mask = INTERRUPT_TIMER;
-        vector = 0x0050;
-    } else if ((pending & INTERRUPT_SERIAL) != 0) {
-        interrupt_mask = INTERRUPT_SERIAL;
-        vector = 0x0058;
-    } else {
-        interrupt_mask = INTERRUPT_JOYPAD;
-        vector = 0x0060;
-    }
+    uint8_t interrupt_mask = interrupts_highest_priority(pending);
+    uint16_t vector = interrupts_vector(interrupt_mask);
 
     cpu->ime = false;
     cpu->ime_enable_delay = 0;
@@ -247,7 +248,7 @@ static void cpu_service_interrupt(CPU *cpu, uint8_t pending)
     cpu_idle(cpu);
     cpu_push16(cpu, cpu->registers.pc);
 
-    interrupts_acknowledge(cpu->bus->interrupts, interrupt_mask);
+    interrupts_acknowledge(cpu->interrupts, interrupt_mask);
 
     cpu->registers.pc = vector;
     cpu_idle(cpu);
