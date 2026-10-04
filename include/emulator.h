@@ -8,6 +8,12 @@
 typedef struct Emulator Emulator;
 
 
+enum {
+    EMULATOR_SCREEN_WIDTH = 160,
+    EMULATOR_SCREEN_HEIGHT = 144
+};
+
+
 /*
  * Result of emulator operations. EMULATOR_OK is zero, so callers that only
  * care about success can keep testing for non-zero.
@@ -151,6 +157,22 @@ bool emulator_get_unsupported_cartridge_type(
     const Emulator *emulator,
     uint8_t *type
 );
+
+
+/**
+ * The LCD picture: EMULATOR_SCREEN_WIDTH x EMULATOR_SCREEN_HEIGHT shades,
+ * row-major, 0 (lightest) to 3 (darkest) after the palette registers. It is
+ * drawn line by line as the machine runs, so a complete picture is there
+ * once emulator_frame_count() has gone up. The pointer stays valid for the
+ * life of the emulator.
+ *
+ * @return the framebuffer, or NULL if `emulator` is NULL.
+ */
+const uint8_t *emulator_framebuffer(const Emulator *emulator);
+
+
+/** Frames completed (VBlank entered) since the last ROM load. */
+uint64_t emulator_frame_count(const Emulator *emulator);
 
 
 /** Human-readable text for a status value. */
