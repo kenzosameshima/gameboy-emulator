@@ -84,6 +84,7 @@ typedef struct Cartridge {
 
     uint8_t *ram;
     size_t ram_size;
+    bool has_battery;    /* the RAM (and clock) survive power off */
 
     union {
         Mbc1State mbc1;
@@ -124,6 +125,41 @@ CartridgeLoadStatus cartridge_load(
     uint8_t *unsupported_type
 );
 void cartridge_destroy(Cartridge *cartridge);
+
+/* Result of cartridge_save_battery() and cartridge_load_battery(). */
+typedef enum {
+    CARTRIDGE_SAVE_OK = 0,
+    /* The cartridge has no battery, so there is nothing to keep. */
+    CARTRIDGE_SAVE_NOT_BATTERY_BACKED,
+    /* Loading only: no file yet, which is normal the first time. */
+    CARTRIDGE_SAVE_NO_FILE,
+    CARTRIDGE_SAVE_IO_ERROR,
+    /* Loading only: the file is not the size this cartridge saves. */
+    CARTRIDGE_SAVE_BAD_SIZE
+} CartridgeSaveStatus;
+
+/*
+ * Battery saves. The file is a raw dump of the cartridge RAM, which other
+ * emulators read too. An MBC3 cartridge with a timer adds the 48-byte clock
+ * footer that BGB and VBA-M write: the running and the latched clock as
+ * 32-bit words (seconds, minutes, hours, day low, day high), then the time
+ * of the save as a 64-bit value. Loading adds the time that has passed since
+ * then to the running clock, unless it is halted.
+ *
+ * The core has no clock of its own: the caller passes `unix_time` (seconds
+ * since 1970). A save is written to a temporary file and renamed into place,
+ * and a load that fails changes nothing.
+ */
+CartridgeSaveStatus cartridge_save_battery(
+    const Cartridge *cartridge,
+    const char *path,
+    uint64_t unix_time
+);
+CartridgeSaveStatus cartridge_load_battery(
+    Cartridge *cartridge,
+    const char *path,
+    uint64_t unix_time
+);
 
 /* 0000-7FFF, through the mapper. */
 uint8_t cartridge_read(const Cartridge *cartridge, uint16_t address);

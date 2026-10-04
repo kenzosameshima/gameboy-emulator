@@ -281,11 +281,131 @@ static void mbc3_step(Cartridge *cartridge, CpuCycles cycles)
     }
 }
 
+/*
+ * Battery save of the clock: 48 bytes after the RAM, as BGB and VBA-M write
+ * them. The running clock and the latched copy are each five little-endian
+ * 32-bit words (seconds, minutes, hours, day low, day high with bit 0 the
+ * ninth day bit, bit 6 halt and bit 7 carry), followed by the time of the
+ * save as a 64-bit value.
+ */
+enum {
+    MBC3_CLOCK_WORDS = 5,
+    MBC3_FOOTER_SIZE = 2 * MBC3_CLOCK_WORDS * 4 + 8
+};
+
+static void put_u32(uint8_t *out, uint32_t value)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        out[i] = (uint8_t)(value >> (8 * i));
+    }
+}
+
+static uint32_t get_u32(const uint8_t *in)
+{
+    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) |
+           ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 24);
+}
+
+static void clock_to_words(const RtcRegisters *clock, uint8_t *out)
+{
+    put_u32(out + 0, clock->seconds);
+    put_u32(out + 4, clock->minutes);
+    put_u32(out + 8, clock->hours);
+    put_u32(out + 12, clock->days & 0xFF);
+    put_u32(out + 16, mbc3_day_high(clock));
+}
+
+static void clock_from_words(RtcRegisters *clock, const uint8_t *in)
+{
+    uint32_t day_high = get_u32(in + 16);
+
+    clock->seconds = (uint8_t)(get_u32(in + 0) & 0x3F);
+    clock->minutes = (uint8_t)(get_u32(in + 4) & 0x3F);
+    clock->hours = (uint8_t)(get_u32(in + 8) & 0x1F);
+    clock->days = (uint16_t)(((day_high & MBC3_DAY_HIGH_BIT8) << 8) |
+                             (get_u32(in + 12) & 0xFF));
+    clock->halted = (day_high & MBC3_DAY_HIGH_HALT) != 0;
+    clock->day_carry = (day_high & MBC3_DAY_HIGH_CARRY) != 0;
+}
+
+/* Adds elapsed seconds to a clock that is running, wrapping the 9-bit day
+ * counter and setting the carry when it does. */
+static void clock_advance(RtcRegisters *clock, uint64_t seconds)
+{
+    if (clock->halted || seconds == 0) {
+        return;
+    }
+
+    uint64_t total = clock->seconds +
+                     60ull * (clock->minutes +
+                              60ull * (clock->hours + 24ull * clock->days));
+
+    total += seconds;
+
+    clock->seconds = (uint8_t)(total % 60);
+    total /= 60;
+    clock->minutes = (uint8_t)(total % 60);
+    total /= 60;
+    clock->hours = (uint8_t)(total % 24);
+    total /= 24;
+
+    if (total >= 512) {
+        clock->day_carry = true;
+    }
+
+    clock->days = (uint16_t)(total % 512);
+}
+
+static size_t mbc3_save_extra_size(const Cartridge *cartridge)
+{
+    return cartridge->state.mbc3.has_clock ? MBC3_FOOTER_SIZE : 0;
+}
+
+static void mbc3_save_extra(
+    const Cartridge *cartridge,
+    uint8_t *out,
+    uint64_t unix_time
+)
+{
+    const Mbc3State *mbc3 = &cartridge->state.mbc3;
+
+    clock_to_words(&mbc3->live, out);
+    clock_to_words(&mbc3->latched, out + MBC3_CLOCK_WORDS * 4);
+
+    for (unsigned i = 0; i < 8; i++) {
+        out[2 * MBC3_CLOCK_WORDS * 4 + i] = (uint8_t)(unix_time >> (8 * i));
+    }
+}
+
+static void mbc3_load_extra(
+    Cartridge *cartridge,
+    const uint8_t *in,
+    uint64_t unix_time
+)
+{
+    Mbc3State *mbc3 = &cartridge->state.mbc3;
+    uint64_t saved_at = 0;
+
+    clock_from_words(&mbc3->live, in);
+    clock_from_words(&mbc3->latched, in + MBC3_CLOCK_WORDS * 4);
+
+    for (unsigned i = 0; i < 8; i++) {
+        saved_at |= (uint64_t)in[2 * MBC3_CLOCK_WORDS * 4 + i] << (8 * i);
+    }
+
+    /* The clock kept running while the console was off. */
+    clock_advance(&mbc3->live, unix_time > saved_at ? unix_time - saved_at : 0);
+    mbc3->subsecond_cycles = 0;
+}
+
 const MapperOps MAPPER_MBC3 = {
     .reset = mbc3_reset,
     .read_rom = mbc3_read_rom,
     .write_rom = mbc3_write_rom,
     .read_ram = mbc3_read_ram,
     .write_ram = mbc3_write_ram,
-    .step = mbc3_step
+    .step = mbc3_step,
+    .save_extra_size = mbc3_save_extra_size,
+    .save_extra = mbc3_save_extra,
+    .load_extra = mbc3_load_extra
 };

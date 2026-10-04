@@ -11,3 +11,7 @@
 
 # Downloaded Mooneye test suite.
 /roms/mooneye/
+
+# Battery saves written next to ROMs.
+*.sav
+*.sav.tmp

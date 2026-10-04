@@ -2,11 +2,16 @@
  * SDL2 front end: shows the LCD picture in a window, turns the keyboard
  * into Game Boy buttons and runs the machine at the real frame rate.
  *
- * Usage: gameboy-sdl <rom> [--scale N] [--gray] [--frames N]
+ * Usage: gameboy-sdl <rom> [--scale N] [--gray] [--frames N] [--no-save]
  *
  *   --scale N   window size as a multiple of 160x144 (default 4)
  *   --gray      grayscale instead of the classic green palette
  *   --frames N  exit after N frames (for smoke tests)
+ *   --no-save   do not load or write the battery save
+ *
+ * A cartridge with a battery keeps its RAM (and an MBC3 clock) in a .sav file
+ * next to the ROM, with the same name: it is loaded at start, written every
+ * 30 seconds and when the program ends.
  *
  * Keys: arrows = D-pad, Z = A, X = B, Enter = Start, Right Shift or
  * Backspace = Select, Escape = quit.
@@ -19,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <SDL.h>
 
@@ -26,6 +32,8 @@
 
 enum {
     DEFAULT_SCALE = 4,
+    SAVE_INTERVAL_MS = 30000,
+    SAVE_PATH_CAPACITY = 1024,
     CYCLES_PER_FRAME = 70224
 };
 
@@ -88,6 +96,7 @@ typedef struct Options {
     unsigned long scale;
     unsigned long frames;   /* 0 means run until the window is closed */
     const uint32_t *palette;
+    int save;               /* load and write the battery save */
 } Options;
 
 static int parse_options(int argc, char **argv, Options *options)
@@ -96,6 +105,7 @@ static int parse_options(int argc, char **argv, Options *options)
     options->scale = DEFAULT_SCALE;
     options->frames = 0;
     options->palette = PALETTE_GREEN;
+    options->save = 1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
@@ -108,6 +118,8 @@ static int parse_options(int argc, char **argv, Options *options)
             }
         } else if (strcmp(argv[i], "--gray") == 0) {
             options->palette = PALETTE_GRAY;
+        } else if (strcmp(argv[i], "--no-save") == 0) {
+            options->save = 0;
         } else if (argv[i][0] != '-' && options->rom == NULL) {
             options->rom = argv[i];
         } else {
@@ -151,6 +163,35 @@ static void wait_until(uint64_t deadline)
     }
 }
 
+/* "game.gb" -> "game.sav": the extension, if any, is replaced. */
+static int save_path_for(const char *rom, char *out, size_t capacity)
+{
+    const char *name = base_name(rom);
+    const char *dot = strrchr(name, '.');
+    size_t stem = dot != NULL ? (size_t)(dot - rom) : strlen(rom);
+
+    if (stem + sizeof(".sav") > capacity) {
+        return 0;
+    }
+
+    memcpy(out, rom, stem);
+    memcpy(out + stem, ".sav", sizeof(".sav"));
+
+    return 1;
+}
+
+static void save_battery(Emulator *emulator, const char *save_path)
+{
+    EmulatorStatus status = emulator_save_battery(
+        emulator, save_path, (uint64_t)time(NULL)
+    );
+
+    if (status != EMULATOR_OK) {
+        fprintf(stderr, "Could not write %s: %s\n", save_path,
+                emulator_status_string(status));
+    }
+}
+
 static void draw_frame(const Emulator *emulator, const uint32_t *palette,
                        uint32_t *pixels)
 {
@@ -162,7 +203,11 @@ static void draw_frame(const Emulator *emulator, const uint32_t *palette,
     }
 }
 
-static int run(Emulator *emulator, const Options *options)
+static int run(
+    Emulator *emulator,
+    const Options *options,
+    const char *save_path
+)
 {
     char title[256];
 
@@ -221,6 +266,7 @@ static int run(Emulator *emulator, const Options *options)
     uint64_t frame_ticks =
         SDL_GetPerformanceFrequency() * FRAME_NANOSECONDS / 1000000000ull;
     uint64_t next_frame = SDL_GetPerformanceCounter();
+    uint32_t last_save = SDL_GetTicks();
 
     while (running) {
         SDL_Event event;
@@ -265,6 +311,12 @@ static int run(Emulator *emulator, const Options *options)
             break;
         }
 
+        if (save_path != NULL &&
+            SDL_GetTicks() - last_save >= SAVE_INTERVAL_MS) {
+            save_battery(emulator, save_path);
+            last_save = SDL_GetTicks();
+        }
+
         draw_frame(emulator, options->palette, pixels);
         SDL_UpdateTexture(texture, NULL, pixels,
                           EMULATOR_SCREEN_WIDTH * (int)sizeof(uint32_t));
@@ -291,6 +343,10 @@ static int run(Emulator *emulator, const Options *options)
         wait_until(next_frame);
     }
 
+    if (save_path != NULL) {
+        save_battery(emulator, save_path);
+    }
+
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
@@ -304,7 +360,7 @@ int main(int argc, char **argv)
 
     if (!parse_options(argc, argv, &options)) {
         fprintf(stderr,
-                "Usage: %s <rom> [--scale N] [--gray] [--frames N]\n",
+                "Usage: %s <rom> [--scale N] [--gray] [--frames N] [--no-save]\n",
                 argv[0]);
         return 1;
     }
@@ -334,13 +390,32 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Pick up the battery save left by the last session, if any. */
+    char save_path[SAVE_PATH_CAPACITY];
+    const char *save = NULL;
+
+    if (options.save && emulator_has_battery(emulator)) {
+        if (!save_path_for(options.rom, save_path, sizeof(save_path))) {
+            fprintf(stderr, "ROM path too long for a save file\n");
+        } else {
+            save = save_path;
+            status = emulator_load_battery(emulator, save, (uint64_t)time(NULL));
+
+            if (status != EMULATOR_OK && status != EMULATOR_NO_SAVE_FILE) {
+                fprintf(stderr, "Could not load %s: %s; not saving over it\n",
+                        save, emulator_status_string(status));
+                save = NULL;
+            }
+        }
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "Could not start SDL: %s\n", SDL_GetError());
         emulator_destroy(emulator);
         return 1;
     }
 
-    int exit_code = run(emulator, &options);
+    int exit_code = run(emulator, &options, save);
 
     SDL_Quit();
     emulator_destroy(emulator);

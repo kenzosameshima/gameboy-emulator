@@ -63,6 +63,7 @@ CORE_SRC = src/emulator.c \
 	       src/dma.c \
 	       src/joypad.c \
 	       src/cartridge.c \
+	       src/cartridge_save.c \
 	       src/mapper_rom_only.c \
 	       src/mapper_mbc1.c \
 	       src/mapper_mbc2.c \

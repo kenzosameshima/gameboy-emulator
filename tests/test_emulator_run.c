@@ -365,7 +365,7 @@ static void test_status_strings(void)
     /* Every defined status has its own text, not the fallback. */
     const char *unknown = emulator_status_string((EmulatorStatus)99);
 
-    for (int status = EMULATOR_OK; status <= EMULATOR_STALLED; status++) {
+    for (int status = EMULATOR_OK; status <= EMULATOR_ERROR_SAVE_SIZE; status++) {
         assert(strcmp(emulator_status_string((EmulatorStatus)status),
                       unknown) != 0);
     }
