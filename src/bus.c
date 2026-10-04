@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <apu.h>
 #include <bus.h>
 #include <cartridge.h>
 #include <dma.h>
@@ -21,6 +22,13 @@ static bool bus_is_serial_address(uint16_t address)
 {
     return address == SERIAL_SB_ADDRESS ||
            address == SERIAL_SC_ADDRESS;
+}
+
+/* NR10-NR52 and wave RAM; the addresses between them are unused. */
+static bool bus_is_apu_address(uint16_t address)
+{
+    return (address >= APU_REGISTERS_START && address <= APU_REGISTERS_END) ||
+           (address >= APU_WAVE_RAM_START && address <= APU_WAVE_RAM_END);
 }
 
 static bool bus_is_dma_address(uint16_t address)
@@ -103,6 +111,7 @@ void bus_init(
     bus->ppu = NULL;
     bus->dma = NULL;
     bus->joypad = NULL;
+    bus->apu = NULL;
 }
 
 void bus_attach_timer(Bus *bus, Timer *timer)
@@ -118,6 +127,11 @@ void bus_attach_serial(Bus *bus, Serial *serial)
 void bus_attach_ppu(Bus *bus, Ppu *ppu)
 {
     bus->ppu = ppu;
+}
+
+void bus_attach_apu(Bus *bus, Apu *apu)
+{
+    bus->apu = apu;
 }
 
 void bus_attach_dma(Bus *bus, Dma *dma)
@@ -153,6 +167,10 @@ static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
 
     if (bus_is_ppu_address(address)) {
         return bus->ppu == NULL ? 0xFF : ppu_read(bus->ppu, address);
+    }
+
+    if (bus_is_apu_address(address)) {
+        return bus->apu == NULL ? 0xFF : apu_read(bus->apu, address);
     }
 
     if (bus_is_joypad_address(address)) {
@@ -244,6 +262,13 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
     if (bus_is_joypad_address(address)) {
         if (bus->joypad != NULL) {
             joypad_write(bus->joypad, value);
+        }
+        return;
+    }
+
+    if (bus_is_apu_address(address)) {
+        if (bus->apu != NULL) {
+            apu_write(bus->apu, address, value);
         }
         return;
     }

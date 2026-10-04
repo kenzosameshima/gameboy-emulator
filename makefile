@@ -62,6 +62,7 @@ CORE_SRC = src/emulator.c \
 	       src/ppu_render.c \
 	       src/dma.c \
 	       src/joypad.c \
+	       src/apu.c \
 	       src/cartridge.c \
 	       src/cartridge_save.c \
 	       src/mapper_rom_only.c \

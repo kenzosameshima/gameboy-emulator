@@ -2,6 +2,7 @@
 #define EMULATOR_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 
@@ -194,6 +195,33 @@ const uint8_t *emulator_framebuffer(const Emulator *emulator);
 
 /** Frames completed (VBlank entered) since the last ROM load. */
 uint64_t emulator_frame_count(const Emulator *emulator);
+
+
+/**
+ * Audio output. With a sample rate set, the machine queues stereo frames of
+ * 16-bit samples (interleaved left, right) as it runs, at that many frames
+ * a second; with the default rate of 0 it produces none. The samples are the
+ * raw mix of the four channels. Real hardware high-pass filters it, which a
+ * front end can do. Setting the rate discards what is queued and survives
+ * loading a ROM.
+ *
+ * A few thousand frames fit; if they are not taken the oldest are dropped.
+ * Neither call is safe to make while the emulator runs on another thread.
+ */
+void emulator_set_audio_sample_rate(Emulator *emulator, unsigned rate);
+
+
+/**
+ * Moves up to `max_frames` queued frames into `out` (2 * max_frames
+ * samples).
+ *
+ * @return the number of frames written.
+ */
+size_t emulator_take_audio(
+    Emulator *emulator,
+    int16_t *out,
+    size_t max_frames
+);
 
 
 /**

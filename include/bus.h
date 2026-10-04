@@ -12,6 +12,7 @@ typedef struct Serial Serial;
 typedef struct Ppu Ppu;
 typedef struct Dma Dma;
 typedef struct Joypad Joypad;
+typedef struct Apu Apu;
 
 typedef struct Bus {
     Cartridge *cartridge;
@@ -22,6 +23,7 @@ typedef struct Bus {
     Ppu *ppu;
     Dma *dma;
     Joypad *joypad;
+    Apu *apu;
 } Bus;
 
 /*
@@ -36,6 +38,7 @@ typedef struct Bus {
  * FF01-FF02 serial registers
  * FF04-FF07 timer registers
  * FF0F       interrupt flag (IF)
+ * FF10-FF26 sound registers, FF30-FF3F wave RAM
  * FF40-FF45, FF47-FF4B LCD registers
  * FF46      OAM DMA
  * FF80-FFFE high RAM
@@ -43,7 +46,7 @@ typedef struct Bus {
  * All other addresses currently return 0xFF or ignore writes.
  *
 
- * The timer, serial port, PPU, DMA and joypad are optional: without them
+ * The timer, serial port, PPU, DMA, joypad and APU are optional: without them
  * their addresses read 0xFF and ignore writes.
  *
  * While OAM DMA is copying, bus_read() and bus_write() cannot reach OAM or
@@ -65,6 +68,7 @@ void bus_attach_serial(Bus *bus, Serial *serial);
 void bus_attach_ppu(Bus *bus, Ppu *ppu);
 void bus_attach_dma(Bus *bus, Dma *dma);
 void bus_attach_joypad(Bus *bus, Joypad *joypad);
+void bus_attach_apu(Bus *bus, Apu *apu);
 
 uint8_t bus_read(Bus *bus, uint16_t address);
 void bus_write(Bus *bus, uint16_t address, uint8_t value);
