@@ -2,20 +2,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <cartridge.h>
 #include <memory_map.h>
+
+#include "mapper.h"
 
 enum {
     CARTRIDGE_TYPE_ROM_ONLY = 0x00,
     CARTRIDGE_TYPE_MBC1 = 0x01,
     CARTRIDGE_TYPE_MBC1_RAM = 0x02,
-    CARTRIDGE_TYPE_MBC1_RAM_BATTERY = 0x03,
-
-    MBC1_RAM_ENABLE_END = 0x1FFF,
-    MBC1_ROM_BANK_END = 0x3FFF,
-    MBC1_BANK_HIGH_END = 0x5FFF,
-    MBC1_RAM_ENABLE_VALUE = 0x0A
+    CARTRIDGE_TYPE_MBC1_RAM_BATTERY = 0x03
 };
 
 static size_t cartridge_ram_size_from_header(uint8_t code)
@@ -83,49 +81,19 @@ static size_t cartridge_rom_bank_mask(size_t rom_size)
     return banks - 1;
 }
 
-static size_t cartridge_rom_offset(
-    const Cartridge *cartridge,
-    uint16_t address
-)
+static const MapperOps *const MAPPER_TABLE[] = {
+    [CARTRIDGE_MAPPER_NONE] = &MAPPER_ROM_ONLY,
+    [CARTRIDGE_MAPPER_MBC1] = &MAPPER_MBC1
+};
+
+const MapperOps *cartridge_mapper_ops(CartridgeMapper mapper)
 {
-    if (cartridge->mapper != CARTRIDGE_MAPPER_MBC1) {
-        return address;
-    }
-
-    size_t bank;
-
-    if (address < CARTRIDGE_ROM_BANK_SIZE) {
-        bank = cartridge->banking_mode
-            ? (size_t)cartridge->bank_high << 5
-            : 0;
-    } else {
-        bank = ((size_t)cartridge->bank_high << 5) |
-               cartridge->bank_low;
-    }
-
-    bank &= cartridge->rom_bank_mask;
-
-    return bank * CARTRIDGE_ROM_BANK_SIZE +
-           (address & (CARTRIDGE_ROM_BANK_SIZE - 1));
+    return MAPPER_TABLE[mapper];
 }
 
-static bool cartridge_ram_available(const Cartridge *cartridge)
+uint8_t cartridge_rom_byte(const Cartridge *cartridge, size_t offset)
 {
-    return cartridge->ram != NULL &&
-           cartridge->ram_size != 0 &&
-           cartridge->ram_enabled;
-}
-
-static size_t cartridge_ram_offset(
-    const Cartridge *cartridge,
-    uint16_t address
-)
-{
-    size_t bank = cartridge->banking_mode ? cartridge->bank_high : 0;
-    size_t offset = bank * CARTRIDGE_RAM_BANK_SIZE +
-                    (size_t)(address - MEM_CART_RAM_START);
-
-    return offset % cartridge->ram_size;
+    return offset < cartridge->rom_size ? cartridge->rom[offset] : 0xFF;
 }
 
 void cartridge_init(Cartridge *cartridge)
@@ -140,10 +108,7 @@ void cartridge_init(Cartridge *cartridge)
     cartridge->mapper = CARTRIDGE_MAPPER_NONE;
     cartridge->ram = NULL;
     cartridge->ram_size = 0;
-    cartridge->ram_enabled = false;
-    cartridge->bank_low = 1;
-    cartridge->bank_high = 0;
-    cartridge->banking_mode = false;
+    memset(&cartridge->state, 0, sizeof(cartridge->state));
 }
 
 CartridgeLoadStatus cartridge_load(
@@ -234,6 +199,7 @@ CartridgeLoadStatus cartridge_load(
     cartridge->mapper = mapper;
     cartridge->ram = ram;
     cartridge->ram_size = ram_size;
+    cartridge_mapper_ops(mapper)->reset(cartridge);
 
     return CARTRIDGE_LOAD_OK;
 }
@@ -265,13 +231,10 @@ uint8_t cartridge_read(
         return 0xFF;
     }
 
-    size_t offset = cartridge_rom_offset(cartridge, address);
-
-    if (offset >= cartridge->rom_size) {
-        return 0xFF;
-    }
-
-    return cartridge->rom[offset];
+    return cartridge_mapper_ops(cartridge->mapper)->read_rom(
+        cartridge,
+        address
+    );
 }
 
 void cartridge_write(
@@ -280,24 +243,15 @@ void cartridge_write(
     uint8_t value
 )
 {
-    if (cartridge == NULL ||
-        cartridge->mapper != CARTRIDGE_MAPPER_MBC1 ||
-        address > MEM_ROM_END) {
+    if (cartridge == NULL || address > MEM_ROM_END) {
         return;
     }
 
-    if (address <= MBC1_RAM_ENABLE_END) {
-        cartridge->ram_enabled =
-            (value & 0x0F) == MBC1_RAM_ENABLE_VALUE;
-    } else if (address <= MBC1_ROM_BANK_END) {
-        uint8_t bank = (uint8_t)(value & 0x1F);
-
-        cartridge->bank_low = bank == 0 ? 1 : bank;
-    } else if (address <= MBC1_BANK_HIGH_END) {
-        cartridge->bank_high = (uint8_t)(value & 0x03);
-    } else {
-        cartridge->banking_mode = (value & 0x01) != 0;
-    }
+    cartridge_mapper_ops(cartridge->mapper)->write_rom(
+        cartridge,
+        address,
+        value
+    );
 }
 
 uint8_t cartridge_read_ram(
@@ -305,11 +259,16 @@ uint8_t cartridge_read_ram(
     uint16_t address
 )
 {
-    if (cartridge == NULL || !cartridge_ram_available(cartridge)) {
+    if (cartridge == NULL ||
+        address < MEM_CART_RAM_START ||
+        address > MEM_CART_RAM_END) {
         return 0xFF;
     }
 
-    return cartridge->ram[cartridge_ram_offset(cartridge, address)];
+    return cartridge_mapper_ops(cartridge->mapper)->read_ram(
+        cartridge,
+        address
+    );
 }
 
 void cartridge_write_ram(
@@ -318,9 +277,15 @@ void cartridge_write_ram(
     uint8_t value
 )
 {
-    if (cartridge == NULL || !cartridge_ram_available(cartridge)) {
+    if (cartridge == NULL ||
+        address < MEM_CART_RAM_START ||
+        address > MEM_CART_RAM_END) {
         return;
     }
 
-    cartridge->ram[cartridge_ram_offset(cartridge, address)] = value;
+    cartridge_mapper_ops(cartridge->mapper)->write_ram(
+        cartridge,
+        address,
+        value
+    );
 }

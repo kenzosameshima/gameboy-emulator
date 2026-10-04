@@ -18,7 +18,7 @@ main.c            tools/rom_test.c
               +-- CPU  (cpu.c, cpu_ops.c, cpu_cb.c, cpu_alu.c)
               +-- Bus
               +-- Memory
-              +-- Cartridge (ROM-only, MBC1)
+              +-- Cartridge (ROM-only, MBC1)   [mapper seam: src/mapper.h]
               +-- InterruptRegisters (interrupts.c)
               +-- Timer
               +-- Serial
@@ -61,6 +61,7 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 
 - ROM file loading with transactional replacement.
 - Header parsing for the cartridge type and RAM size.
+- A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
 - ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size.
 - Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so `./gameboy "roms/Pokemon Red.gb"` says it is type `0x13` (MBC3).
 - Cartridge RAM is not persisted to disk.
@@ -142,7 +143,10 @@ src/cpu_internal.h      Private CPU helpers shared by the cpu_*.c files
 src/bus.c               Address routing
 src/interrupts.c        IF/IE registers and interrupt requests
 src/memory.c            WRAM and HRAM
-src/cartridge.c         ROM/RAM ownership, loading, MBC1
+src/cartridge.c         ROM/RAM ownership, loading, header parsing, mapper dispatch
+src/mapper.h            MapperOps: the seam between Cartridge and a mapper
+src/mapper_rom_only.c   ROM-only mapper
+src/mapper_mbc1.c       MBC1 mapper
 src/timer.c             Timer implementation
 src/serial.c            Serial port
 tools/rom_test.c        Headless test ROM runner

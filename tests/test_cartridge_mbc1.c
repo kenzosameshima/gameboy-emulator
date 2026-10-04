@@ -264,6 +264,12 @@ static void test_rom_only_ignores_mapper_writes(void)
     assert(cartridge_read(&cartridge, 0x4000) == 1);
     assert(cartridge_read_ram(&cartridge, 0xA000) == 0xFF);
 
+    /* RAM accesses outside A000-BFFF never reach the mapper. */
+    cartridge_write_ram(&cartridge, 0x9FFF, 0x12);
+    cartridge_write_ram(&cartridge, 0xC000, 0x12);
+    assert(cartridge_read_ram(&cartridge, 0x9FFF) == 0xFF);
+    assert(cartridge_read_ram(&cartridge, 0xC000) == 0xFF);
+
     cartridge_destroy(&cartridge);
     remove(rom_path);
 }
