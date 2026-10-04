@@ -47,7 +47,15 @@ typedef enum {
      * The CPU is halted (or stopped) and nothing can wake it up, so
      * running further would spin forever. Not an emulation error.
      */
-    EMULATOR_STALLED
+    EMULATOR_STALLED,
+    /* Loading a battery save: there is no file yet, which is normal the
+     * first time and not an error. */
+    EMULATOR_NO_SAVE_FILE,
+    /* The cartridge has no battery, so there is nothing to save or load. */
+    EMULATOR_ERROR_NOT_BATTERY_BACKED,
+    EMULATOR_ERROR_SAVE_IO,
+    /* The save file is not the size this cartridge saves. */
+    EMULATOR_ERROR_SAVE_SIZE
 } EmulatorStatus;
 
 typedef struct EmulatorFault {
@@ -195,6 +203,51 @@ uint64_t emulator_frame_count(const Emulator *emulator);
  * The set is cleared by a ROM load.
  */
 void emulator_set_buttons(Emulator *emulator, uint8_t pressed);
+
+
+/**
+ * Whether the loaded cartridge has a battery: RAM, and for some MBC3
+ * cartridges a clock, that a real console keeps while it is off.
+ */
+bool emulator_has_battery(const Emulator *emulator);
+
+
+/**
+ * Saves the cartridge RAM (and the MBC3 clock) to `path`: a raw dump of the
+ * RAM, which other emulators read too, with the 48-byte clock footer BGB and
+ * VBA-M use when there is a clock. The file is written to a temporary name
+ * and renamed into place, so a failed save leaves the old one alone.
+ *
+ * The core has no clock: `unix_time` is the current time in seconds since
+ * 1970, recorded with the clock so a later load can add the time that
+ * passed.
+ *
+ * @return EMULATOR_OK, EMULATOR_ERROR_NOT_BATTERY_BACKED,
+ *         EMULATOR_ERROR_SAVE_IO or EMULATOR_ERROR_NO_ROM.
+ */
+EmulatorStatus emulator_save_battery(
+    const Emulator *emulator,
+    const char *path,
+    uint64_t unix_time
+);
+
+
+/**
+ * Loads a save written by emulator_save_battery() into the cartridge, and
+ * advances an MBC3 clock by the time between the save and `unix_time` unless
+ * it is halted. Call it after emulator_load_rom(), which clears the RAM.
+ * Nothing changes if it fails.
+ *
+ * @return EMULATOR_OK; EMULATOR_NO_SAVE_FILE if there is no file yet (not an
+ *         error); EMULATOR_ERROR_SAVE_SIZE for a file of the wrong size; or
+ *         EMULATOR_ERROR_NOT_BATTERY_BACKED, EMULATOR_ERROR_SAVE_IO,
+ *         EMULATOR_ERROR_NO_ROM.
+ */
+EmulatorStatus emulator_load_battery(
+    Emulator *emulator,
+    const char *path,
+    uint64_t unix_time
+);
 
 
 /** Human-readable text for a status value. */

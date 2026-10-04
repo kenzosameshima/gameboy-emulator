@@ -32,6 +32,23 @@ enum {
     MBC2_RAM_SIZE = 0x200
 };
 
+static bool cartridge_type_has_battery(uint8_t type)
+{
+    switch (type) {
+        case CARTRIDGE_TYPE_MBC1_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC2_BATTERY:
+        case CARTRIDGE_TYPE_MBC3_TIMER_BATTERY:
+        case CARTRIDGE_TYPE_MBC3_TIMER_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC3_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC5_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC5_RUMBLE_RAM_BATTERY:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
 static size_t cartridge_ram_size_from_header(uint8_t code)
 {
     switch (code) {
@@ -168,6 +185,7 @@ void cartridge_init(Cartridge *cartridge)
     cartridge->mapper = CARTRIDGE_MAPPER_NONE;
     cartridge->ram = NULL;
     cartridge->ram_size = 0;
+    cartridge->has_battery = false;
     memset(&cartridge->state, 0, sizeof(cartridge->state));
 }
 
@@ -259,6 +277,8 @@ CartridgeLoadStatus cartridge_load(
     cartridge->mapper = mapper;
     cartridge->ram = ram;
     cartridge->ram_size = ram_size;
+    cartridge->has_battery = rom_size > CARTRIDGE_HEADER_RAM_SIZE &&
+                             cartridge_type_has_battery(rom[CARTRIDGE_HEADER_TYPE]);
     cartridge_mapper_ops(mapper)->reset(cartridge);
 
     return CARTRIDGE_LOAD_OK;
@@ -278,6 +298,7 @@ void cartridge_destroy(Cartridge *cartridge)
     cartridge->rom_bank_mask = 0;
     cartridge->ram = NULL;
     cartridge->ram_size = 0;
+    cartridge->has_battery = false;
 }
 
 uint8_t cartridge_read(

@@ -37,6 +37,23 @@ typedef struct MapperOps {
      * mappers with nothing that runs off the CPU clock.
      */
     void (*step)(Cartridge *cartridge, CpuCycles cycles);
+
+    /*
+     * Battery-backed state beyond the RAM, saved right after it (the MBC3
+     * clock). All three are NULL for a mapper with none; the size may be 0
+     * for a cartridge of that mapper without it.
+     */
+    size_t (*save_extra_size)(const Cartridge *cartridge);
+    void (*save_extra)(
+        const Cartridge *cartridge,
+        uint8_t *out,
+        uint64_t unix_time
+    );
+    void (*load_extra)(
+        Cartridge *cartridge,
+        const uint8_t *in,
+        uint64_t unix_time
+    );
 } MapperOps;
 
 extern const MapperOps MAPPER_ROM_ONLY;

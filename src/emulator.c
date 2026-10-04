@@ -280,6 +280,77 @@ bool emulator_get_unsupported_cartridge_type(
 }
 
 
+/* Maps a battery save result to the emulator status. */
+static EmulatorStatus emulator_save_status(CartridgeSaveStatus status)
+{
+    switch (status) {
+        case CARTRIDGE_SAVE_OK:
+            return EMULATOR_OK;
+
+        case CARTRIDGE_SAVE_NOT_BATTERY_BACKED:
+            return EMULATOR_ERROR_NOT_BATTERY_BACKED;
+
+        case CARTRIDGE_SAVE_NO_FILE:
+            return EMULATOR_NO_SAVE_FILE;
+
+        case CARTRIDGE_SAVE_BAD_SIZE:
+            return EMULATOR_ERROR_SAVE_SIZE;
+
+        case CARTRIDGE_SAVE_IO_ERROR:
+            break;
+    }
+
+    return EMULATOR_ERROR_SAVE_IO;
+}
+
+
+bool emulator_has_battery(const Emulator *emulator)
+{
+    return emulator != NULL && emulator->cartridge.rom != NULL &&
+           emulator->cartridge.has_battery;
+}
+
+
+EmulatorStatus emulator_save_battery(
+    const Emulator *emulator,
+    const char *path,
+    uint64_t unix_time
+)
+{
+    if (emulator == NULL || path == NULL) {
+        return EMULATOR_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (emulator->cartridge.rom == NULL) {
+        return EMULATOR_ERROR_NO_ROM;
+    }
+
+    return emulator_save_status(
+        cartridge_save_battery(&emulator->cartridge, path, unix_time)
+    );
+}
+
+
+EmulatorStatus emulator_load_battery(
+    Emulator *emulator,
+    const char *path,
+    uint64_t unix_time
+)
+{
+    if (emulator == NULL || path == NULL) {
+        return EMULATOR_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (emulator->cartridge.rom == NULL) {
+        return EMULATOR_ERROR_NO_ROM;
+    }
+
+    return emulator_save_status(
+        cartridge_load_battery(&emulator->cartridge, path, unix_time)
+    );
+}
+
+
 const char *emulator_status_string(EmulatorStatus status)
 {
     switch (status) {
@@ -306,6 +377,18 @@ const char *emulator_status_string(EmulatorStatus status)
 
         case EMULATOR_STALLED:
             return "CPU halted with no possible wake-up source";
+
+        case EMULATOR_NO_SAVE_FILE:
+            return "no save file yet";
+
+        case EMULATOR_ERROR_NOT_BATTERY_BACKED:
+            return "the cartridge has no battery";
+
+        case EMULATOR_ERROR_SAVE_IO:
+            return "the save file could not be read or written";
+
+        case EMULATOR_ERROR_SAVE_SIZE:
+            return "the save file is not the size this cartridge saves";
     }
 
     return "unknown status";
