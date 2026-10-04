@@ -64,6 +64,7 @@ typedef struct Mbc1State {
     uint8_t bank_low;     /* 5 bits, written 0 is stored as 1 */
     uint8_t bank_high;    /* 2 bits */
     bool banking_mode;    /* false: simple, true: advanced */
+    bool multicart;       /* four games in 1 MiB: 4 bank bits, game picker at bit 4 */
 } Mbc1State;
 
 /*

@@ -65,7 +65,7 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 - ROM file loading with transactional replacement.
 - Header parsing for the cartridge type and RAM size.
 - A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC2, MBC3, MBC5) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
-- ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size.
+- ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size. A 1 MiB ROM with the Nintendo logo at the start of at least two of its 256 KiB sections is treated as a multicart: 4 bank bits inside a game and the game picker shifted by 4.
 - MBC3 (`0x0F`-`0x13`): 7-bit ROM banking (bank 0 remapped to 1), RAM banking, and the real-time clock on the timer variants (`0x0F`, `0x10`). The clock registers (seconds, minutes, hours, 9-bit day, halt, day carry) are read through the latch (write 0 then 1 to `6000-7FFF`), writing the seconds restarts the current second, and the clock runs off the CPU clock (4194304 T-cycles per second), so it is deterministic. Pokémon Red/Blue (`0x13`) loads and runs. The clock is not persisted.
 - MBC2 (`0x05`, `0x06`): a 4-bit ROM bank register and 512 half-bytes of built-in RAM, both programmed through `0000-3FFF` where address bit 8 picks the register; the RAM reads with the top nibble set and repeats through `A000-BFFF`.
 - MBC5 (`0x19`-`0x1E`): 9-bit ROM banking up to 8 MiB where bank 0 is a real choice for the switchable window, and RAM banking up to 128 KiB. Rumble is ignored.
@@ -348,7 +348,7 @@ make build/rom_test
 
 - The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
 - No audio. A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
-- Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time. MBC1 multicart wiring is not detected.
+- Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
 - Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
@@ -358,5 +358,5 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (85 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
+1. Close the remaining Mooneye failures (86 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, and the HALT bug.
 2. Battery saves, then audio.
