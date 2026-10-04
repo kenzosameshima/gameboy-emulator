@@ -3,36 +3,20 @@
 # not listed here, and reports listed ROMs that now pass: delete their lines.
 #
 # Baseline when the runner was added: 45 of 94 DMG ROMs pass. MBC2 and MBC5
-# support brought it to 61.
-acceptance/add_sp_e_timing.gb
+# support brought it to 61, and an exact DMA model to 77.
 acceptance/bits/unused_hwio-GS.gb
 acceptance/boot_div-dmgABCmgb.gb
 acceptance/boot_hwio-dmgABCmgb.gb
-acceptance/call_cc_timing.gb
-acceptance/call_cc_timing2.gb
-acceptance/call_timing.gb
-acceptance/call_timing2.gb
 acceptance/ei_sequence.gb
 acceptance/halt_ime0_nointr_timing.gb
 acceptance/if_ie_registers.gb
 acceptance/interrupts/ie_push.gb
-acceptance/jp_cc_timing.gb
-acceptance/jp_timing.gb
-acceptance/ld_hl_sp_e_timing.gb
-acceptance/oam_dma_restart.gb
-acceptance/oam_dma_start.gb
-acceptance/oam_dma_timing.gb
 acceptance/ppu/hblank_ly_scx_timing-GS.gb
 acceptance/ppu/intr_2_mode0_timing_sprites.gb
 acceptance/ppu/lcdon_timing-GS.gb
 acceptance/ppu/lcdon_write_timing-GS.gb
 acceptance/ppu/stat_lyc_onoff.gb
 acceptance/ppu/vblank_stat_intr-GS.gb
-acceptance/push_timing.gb
-acceptance/ret_cc_timing.gb
-acceptance/ret_timing.gb
-acceptance/reti_timing.gb
-acceptance/rst_timing.gb
 acceptance/serial/boot_sclk_align-dmgABCmgb.gb
 acceptance/timer/tima_write_reloading.gb
 acceptance/timer/tma_write_reloading.gb
