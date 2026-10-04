@@ -1,13 +1,18 @@
 /*
  * Runs a test ROM headless under a cycle budget and reports its verdict.
  *
- * Two ways of reporting are recognised, both through the serial port:
+ * Three ways of reporting are recognised. Two go through the serial port:
  *
  *   Blargg-style ROMs print text that ends with "Passed" or "Failed".
  *   Mooneye ROMs send six bytes: 3 5 8 13 21 34 (the Fibonacci numbers)
  *   for a pass, or 0x42 six times for a failure.
  *
- * The run stops as soon as either is seen.
+ * The third is for Blargg ROMs that only print on screen: they leave the
+ * result in cartridge RAM, with the signature DE B0 61 at A001, a status at
+ * A000 (0x80 while running, 0 for a pass) and the text from A004. That needs
+ * a battery-backed cartridge, since it is read back through the save.
+ *
+ * The run stops as soon as a verdict is seen.
  *
  * Usage: rom_test <rom> [max T-cycles]
  * Exit code: 0 if the ROM passed, 1 otherwise.
@@ -19,12 +24,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
+
 #include <emulator.h>
 
 enum {
     DEFAULT_MAX_CYCLES = 400000000,
-    OUTPUT_CAPACITY = 4096
+    OUTPUT_CAPACITY = 4096,
+
+    /* How often cartridge RAM is checked for a verdict. */
+    RAM_CHECK_CYCLES = 1000000,
+    RAM_TEXT_START = 4
 };
+
+/* The signature that tells a Blargg result in cartridge RAM from garbage. */
+static const uint8_t BLARGG_RAM_SIGNATURE[3] = { 0xDE, 0xB0, 0x61 };
+
+#define BLARGG_RAM_RUNNING 0x80
 
 /* The six bytes a passing Mooneye ROM sends. */
 static const uint8_t MOONEYE_PASS[6] = { 3, 5, 8, 13, 21, 34 };
@@ -89,6 +110,83 @@ static void capture_byte(void *context, uint8_t byte)
     }
 }
 
+/* Looks for a finished result in the cartridge's battery-backed RAM. */
+static void check_cartridge_ram(Emulator *emulator, Capture *capture)
+{
+    char path[64];
+    uint8_t ram[OUTPUT_CAPACITY];
+    size_t count = 0;
+
+    snprintf(path, sizeof(path), "rom_test_%ld.sav", (long)getpid());
+
+    if (emulator_save_battery(emulator, path, 0) != EMULATOR_OK) {
+        return;
+    }
+
+    FILE *file = fopen(path, "rb");
+
+    if (file != NULL) {
+        count = fread(ram, 1, sizeof(ram), file);
+        fclose(file);
+    }
+
+    remove(path);
+
+    if (count <= RAM_TEXT_START || ram[0] == BLARGG_RAM_RUNNING ||
+        memcmp(ram + 1, BLARGG_RAM_SIGNATURE, sizeof(BLARGG_RAM_SIGNATURE)) !=
+            0) {
+        return;
+    }
+
+    for (size_t i = RAM_TEXT_START; i < count && ram[i] != 0 &&
+                                    capture->length + 1 < sizeof(capture->text);
+         i++) {
+        capture->text[capture->length++] = (char)ram[i];
+    }
+
+    capture->text[capture->length] = '\0';
+
+    if (ram[0] == 0) {
+        capture->passed = 1;
+    } else {
+        capture->failed = 1;
+    }
+}
+
+/* Runs until a verdict arrives or `max_cycles` are used up. */
+static EmulatorStatus run_until_verdict(
+    Emulator *emulator,
+    Capture *capture,
+    uint64_t max_cycles
+)
+{
+    int check_ram = emulator_has_battery(emulator);
+    uint64_t start = emulator_cycles(emulator);
+    EmulatorStatus status = EMULATOR_OK;
+
+    while (status == EMULATOR_OK && !capture->passed && !capture->failed) {
+        uint64_t done = emulator_cycles(emulator) - start;
+
+        if (done >= max_cycles) {
+            break;
+        }
+
+        uint64_t slice = max_cycles - done;
+
+        if (slice > RAM_CHECK_CYCLES) {
+            slice = RAM_CHECK_CYCLES;
+        }
+
+        status = emulator_run_cycles(emulator, slice);
+
+        if (check_ram && status == EMULATOR_OK) {
+            check_cartridge_ram(emulator, capture);
+        }
+    }
+
+    return status;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || argc > 3) {
@@ -126,7 +224,7 @@ int main(int argc, char **argv)
     EmulatorStatus status = emulator_load_rom(emulator, argv[1]);
 
     if (status == EMULATOR_OK) {
-        status = emulator_run_cycles(emulator, max_cycles);
+        status = run_until_verdict(emulator, capture, max_cycles);
     }
 
     const char *verdict;

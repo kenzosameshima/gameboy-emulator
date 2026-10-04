@@ -98,8 +98,10 @@ ALL_OBJ = $(CORE_OBJ) \
 
 # Test ROMs that run headless and report through the serial port.
 # dmg-acid2 reports through the screen, not the serial port, and is checked
-# by tests/test_acid2.c instead.
-ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb
+# by tests/test_acid2.c instead. The dmg_sound ROMs report through cartridge
+# RAM, which rom_test reads back through the battery save.
+ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb \
+	    roms/dmg_sound/*.gb
 
 
 .PHONY: all clean test rom-test check sdl mooneye
