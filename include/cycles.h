@@ -8,7 +8,7 @@
  * One M-cycle (one bus access or one internal delay) is 4 T-cycles.
  * A single instruction never takes more than 24 T-cycles.
  */
-typedef uint8_t CpuCycles;
+typedef uint32_t CpuCycles;
 
 enum {
     CYCLES_PER_MCYCLE = 4,
