@@ -122,9 +122,9 @@ Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started
 
 The picture processing unit (`ppu.c`, `ppu_render.c`) owns VRAM, OAM, the LCD registers and the framebuffer.
 
-- Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing (172), HBlank, then VBlank on lines 144-153. `emulator_frame_count()` counts frames at VBlank entry.
-- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking).
-- VRAM is unreadable while drawing and OAM while scanning or drawing (reads give `0xFF`, writes are dropped), and both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0.
+- Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing, HBlank, then VBlank on lines 144-153. Drawing lasts 172 dots plus `SCX mod 8` plus, when sprites are on the line, the sum of their penalties minus 3 (6 dots per sprite with X below 168, and `max(0, 5 - (X + SCX) mod 8)` more for the first sprite over each 8-pixel background tile), which moves when HBlank starts; the rule was fitted to and verified by the Mooneye sprite timing ROM. `emulator_frame_count()` counts frames at VBlank entry.
+- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking). The OAM source also fires when line 144 starts. `LY` reads the next line from dot 452, while the `LY = LYC` flag reads 0 for those 4 dots and is recomputed when the line starts; the flag and the STAT line keep their values while the LCD is off.
+- VRAM and OAM are blocked to the CPU at slightly different dots for reads and writes (reads give `0xFF`, writes are dropped): OAM reads from dot 452 of the previous line until drawing ends, OAM writes during the scan except its last cycle and during drawing, VRAM reads from the scan's last cycle (dot 76) through drawing, and VRAM writes during drawing only. Both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0; turning it on starts line 0 in mode 0 with no OAM scan.
 - Scanline renderer: background with SCX/SCY wrap, both tile data addressing modes and both tile maps, window with its own line counter and WX < 7 handling, 8x8 and 8x16 sprites with flips, both palettes and the behind-background flag, DMG sprite priority (lower X first, then OAM order) and the ten-sprites-per-line limit. Shades 0 (lightest) to 3 (darkest) are available through `emulator_framebuffer()`.
 - `OAM DMA` writes use `ppu_oam_dma_write()`, which ignores the access lock like the hardware does.
 
@@ -310,7 +310,7 @@ The test suite includes:
 - `test_cartridge_mbc2`: the ROM bank and RAM enable registers selected by address bit 8, and the 4-bit built-in RAM with its echo.
 - `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
-- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off.
+- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
 - `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a two-cycle start-up, which bus the CPU loses for a work RAM source and for a VRAM source, and restarts.
 - `test_joypad`: the P1 groups and active-low lines, which bit each key lands on, and when the joypad interrupt fires.
@@ -346,7 +346,7 @@ make build/rom_test
 
 ## Coverage and Limitations
 
-- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
+- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and the window adds no dots to drawing. The LY = 153 early-zero quirk, the STAT write quirk and the OAM bug are not modelled.
 - No audio. A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
 - Cartridge RAM is not saved to disk.
@@ -358,5 +358,5 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (86 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, and the HALT bug.
+1. Close the remaining Mooneye failures (92 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the serial clock alignment at boot, the HALT bug, and the window's effect on mode 3 length.
 2. Battery saves, then audio.

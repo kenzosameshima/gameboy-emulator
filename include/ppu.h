@@ -88,6 +88,10 @@ typedef struct Ppu {
     uint16_t line_dot;      /* dots into the current line, 0-455 */
     uint8_t window_line;    /* next window row to draw */
     bool stat_line;         /* the ORed STAT interrupt condition */
+    bool lyc_flag;          /* latched LY == LYC; frozen while the LCD is off */
+    uint16_t drawing_end_dot;   /* dot of the line where mode 3 ends */
+    bool ly_advanced;           /* LY already shows the next line (from dot 452) */
+    bool pre_draw;              /* first line after LCD on, before drawing starts */
     uint64_t frames;        /* completed frames since reset */
 
     InterruptRegisters *interrupts;
@@ -102,7 +106,8 @@ typedef struct Ppu {
  * Time comes from ppu_step() in T-cycles, which are dots. Each visible
  * line is rendered in one go when drawing starts, from the registers as
  * they are at that moment, so changes made during a line apply from the
- * next one. VRAM is unreadable while drawing and OAM while scanning or
+ * next one. Drawing lasts 172 dots plus SCX mod 8 plus a penalty for the
+ * sprites on the line (see ppu_render.c), which moves when HBlank starts. VRAM is unreadable while drawing and OAM while scanning or
  * drawing, as on hardware: reads give 0xFF and writes are dropped, unless
  * the LCD is off.
  *
