@@ -303,6 +303,7 @@ The test suite includes:
 - `test_interrupts`, `test_emulator_interrupts`: priority, service, HALT wake-up, EI, DI, RETI, and Timer-to-CPU service.
 - `test_cpu_edge_cases`: the cases the Mooneye ROMs found, as unit tests: an `EI` while an enable is pending, HALT waking with no extra cycle, interrupt dispatch when the PC push lands on `IE`, and the `IF`/`IE` register bits.
 - `test_timer_reload`: the M-cycles after a TIMA overflow, where TIMA reads 0, is reloaded, and then ignores writes while a TMA write also reaches it.
+- `test_emulator_boot_state`: what a ROM sees at its entry point, checked with real programs; so far the divider the boot ROM leaves (DIV reads 0xAB).
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
 - `test_serial`: register masks, transfer timing, restart, and the callback.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
@@ -350,12 +351,12 @@ make build/rom_test
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time. MBC1 multicart wiring is not detected.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
-- Register power-on values are the DMG post-boot CPU registers only. DIV and most I/O registers start at zero, and the unused bits of `TAC` and other registers read as zero rather than one.
+- Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of `TAC` and other registers read as zero rather than one.
 - No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (83 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
+1. Close the remaining Mooneye failures (84 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
 2. Battery saves, then audio.

@@ -41,6 +41,12 @@ typedef struct Timer {
 
 void timer_init(Timer *timer, InterruptRegisters *interrupts);
 
+/*
+ * Puts the timer in the state the DMG boot ROM leaves it: the divider at
+ * 0xABCC, so DIV reads 0xAB at the entry point. timer_init() starts it at 0.
+ */
+void timer_power_on(Timer *timer);
+
 uint8_t timer_read(const Timer *timer, uint16_t address);
 void timer_write(Timer *timer, uint16_t address, uint8_t value);
 

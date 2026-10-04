@@ -35,6 +35,10 @@ int main(void)
     create_timer_rom(rom_path);
     assert(emulator_load_rom(emulator, rom_path) == 0);
 
+    /* The boot ROM leaves the divider at 0xABCC; start from 0 so the cycle
+     * counts below line up with the timer edges. */
+    emulator->timer.divider = 0;
+
     bus_write(
         &emulator->bus,
         TIMER_TIMA_ADDRESS,

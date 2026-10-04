@@ -3,6 +3,7 @@
 #include <interrupts.h>
 
 enum {
+    TIMER_BOOT_DIVIDER = 0xABCC,
     TIMER_RELOAD_DELAY_CYCLES = 4
 };
 
@@ -61,6 +62,11 @@ void timer_init(Timer *timer, InterruptRegisters *interrupts)
     timer->reload_delay = 0;
     timer->reload_hold = 0;
     timer->interrupts = interrupts;
+}
+
+void timer_power_on(Timer *timer)
+{
+    timer->divider = TIMER_BOOT_DIVIDER;
 }
 
 static void timer_advance_reload(Timer *timer)
