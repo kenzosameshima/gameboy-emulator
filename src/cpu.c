@@ -14,7 +14,7 @@
 
 static void cpu_normalize_flags(CPU *cpu);
 static void cpu_advance_ime_delay(CPU *cpu);
-static void cpu_service_interrupt(CPU *cpu, uint8_t pending);
+static void cpu_service_interrupt(CPU *cpu);
 
 
 /*
@@ -147,20 +147,20 @@ CpuCycles cpu_step(CPU *cpu)
     uint8_t pending = interrupts_pending(cpu->interrupts);
 
     if (cpu->ime && pending != 0) {
-        cpu_service_interrupt(cpu, pending);
+        cpu_service_interrupt(cpu);
         return cpu->step_cycles;
     }
 
     if (cpu->halted) {
-        if (pending != 0) {
-            cpu->halted = false;
-            cpu->step_status = CPU_STEP_WOKE_FROM_HALT;
-        } else {
+        if (pending == 0) {
             cpu->step_status = CPU_STEP_HALTED;
+            cpu_idle(cpu);
+            return cpu->step_cycles;
         }
 
-        cpu_idle(cpu);
-        return cpu->step_cycles;
+        /* HALT ends with no delay of its own: the next instruction runs
+         * in this step, as if NOPs had been used to wait. */
+        cpu->halted = false;
     }
 
     if (cpu->stopped) {
@@ -230,22 +230,38 @@ static void cpu_advance_ime_delay(CPU *cpu)
  * Interrupt dispatch takes 5 M-cycles: two internal delays, the two
  * stack writes, and the load of the vector into PC.
  */
-static void cpu_service_interrupt(CPU *cpu, uint8_t pending)
+static void cpu_service_interrupt(CPU *cpu)
 {
-    uint8_t interrupt_mask = interrupts_highest_priority(pending);
-    uint16_t vector = interrupts_vector(interrupt_mask);
-
     cpu->ime = false;
     cpu->ime_enable_delay = 0;
     cpu->halted = false;
 
     cpu_idle(cpu);
     cpu_idle(cpu);
-    cpu_push16(cpu, cpu->registers.pc);
 
-    interrupts_acknowledge(cpu->interrupts, interrupt_mask);
+    cpu->registers.sp--;
+    cpu_write8(cpu, cpu->registers.sp, (uint8_t)(cpu->registers.pc >> 8));
 
-    cpu->registers.pc = vector;
+    /*
+     * The interrupt is chosen only now, after the high byte has been pushed.
+     * If that push landed on IE it can have removed the interrupt, which
+     * cancels the dispatch (PC becomes 0 and IF is left alone), or have
+     * removed the highest priority one, so another is dispatched.
+     */
+    uint8_t interrupt_mask = interrupts_highest_priority(
+        interrupts_pending(cpu->interrupts)
+    );
+
+    cpu->registers.sp--;
+    cpu_write8(cpu, cpu->registers.sp, (uint8_t)(cpu->registers.pc & 0xFF));
+
+    if (interrupt_mask == 0) {
+        cpu->registers.pc = 0x0000;
+    } else {
+        interrupts_acknowledge(cpu->interrupts, interrupt_mask);
+        cpu->registers.pc = interrupts_vector(interrupt_mask);
+    }
+
     cpu_idle(cpu);
 
     cpu->step_status = CPU_STEP_INTERRUPT_SERVICED;

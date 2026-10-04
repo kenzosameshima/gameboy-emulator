@@ -33,10 +33,30 @@ static bool bus_is_joypad_address(uint16_t address)
     return address == JOYPAD_ADDRESS;
 }
 
-/* While OAM DMA copies, the CPU reaches only the I/O registers and HRAM. */
+/*
+ * While OAM DMA copies, the CPU shares a bus with it: OAM is always taken,
+ * and so is the bus the source is on, the external bus (ROM, cartridge RAM,
+ * work RAM, echo) or the video bus (VRAM). The I/O registers and HRAM are
+ * free.
+ */
 static bool bus_blocked_by_dma(const Bus *bus, uint16_t address)
 {
-    return bus->dma != NULL && address < 0xFF00 && dma_is_copying(bus->dma);
+    if (bus->dma == NULL || !dma_is_copying(bus->dma)) {
+        return false;
+    }
+
+    if (address >= PPU_OAM_START && address <= PPU_OAM_END) {
+        return true;
+    }
+
+    if (address >= PPU_VRAM_START && address <= PPU_VRAM_END) {
+        return dma_source_is_vram(bus->dma);
+    }
+
+    bool external = address <= MEM_ROM_END ||
+                    (address >= MEM_CART_RAM_START && address <= MEM_ECHO_END);
+
+    return external && !dma_source_is_vram(bus->dma);
 }
 
 static bool bus_is_ppu_address(uint16_t address)
@@ -152,7 +172,8 @@ static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
     }
 
     if (address == INTERRUPT_FLAG_ADDRESS) {
-        return bus->interrupts->interrupt_flag;
+        /* The upper three bits of IF read as 1. */
+        return (uint8_t)(bus->interrupts->interrupt_flag | 0xE0);
     }
 
     if (address == INTERRUPT_ENABLE_ADDRESS) {
@@ -255,7 +276,7 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
     }
 
     if (address == INTERRUPT_ENABLE_ADDRESS) {
-        bus->interrupts->interrupt_enable =
-            (uint8_t)(value & INTERRUPT_VALID_MASK);
+        /* IE keeps all 8 bits, though only the low five are sources. */
+        bus->interrupts->interrupt_enable = value;
     }
 }

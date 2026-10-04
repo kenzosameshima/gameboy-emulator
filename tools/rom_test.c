@@ -1,11 +1,16 @@
 /*
  * Runs a test ROM headless under a cycle budget and reports its verdict.
  *
- * Blargg-style ROMs print their result through the serial port and end
- * with "Passed" or "Failed". The run stops as soon as either word is seen.
+ * Two ways of reporting are recognised, both through the serial port:
+ *
+ *   Blargg-style ROMs print text that ends with "Passed" or "Failed".
+ *   Mooneye ROMs send six bytes: 3 5 8 13 21 34 (the Fibonacci numbers)
+ *   for a pass, or 0x42 six times for a failure.
+ *
+ * The run stops as soon as either is seen.
  *
  * Usage: rom_test <rom> [max T-cycles]
- * Exit code: 0 if the ROM printed "Passed", 1 otherwise.
+ * Exit code: 0 if the ROM passed, 1 otherwise.
  */
 
 #include <errno.h>
@@ -21,13 +26,36 @@ enum {
     OUTPUT_CAPACITY = 4096
 };
 
+/* The six bytes a passing Mooneye ROM sends. */
+static const uint8_t MOONEYE_PASS[6] = { 3, 5, 8, 13, 21, 34 };
+
 typedef struct Capture {
     Emulator *emulator;
     char text[OUTPUT_CAPACITY];
     size_t length;
     int passed;
     int failed;
+    int mooneye;    /* the verdict came as register bytes, not text */
 } Capture;
+
+/* True if the last six bytes received are `expected`, or all 0x42 when it
+ * is NULL. */
+static int ends_with_mooneye(const Capture *capture, const uint8_t *expected)
+{
+    if (capture->length < 6) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < 6; i++) {
+        uint8_t byte = (uint8_t)capture->text[capture->length - 6 + i];
+
+        if (byte != (expected != NULL ? expected[i] : 0x42)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
 
 static void capture_byte(void *context, uint8_t byte)
 {
@@ -44,6 +72,16 @@ static void capture_byte(void *context, uint8_t byte)
 
     if (strstr(capture->text, "Failed") != NULL) {
         capture->failed = 1;
+    }
+
+    if (ends_with_mooneye(capture, MOONEYE_PASS)) {
+        capture->passed = 1;
+        capture->mooneye = 1;
+    }
+
+    if (ends_with_mooneye(capture, NULL)) {
+        capture->failed = 1;
+        capture->mooneye = 1;
     }
 
     if (capture->passed || capture->failed) {
@@ -119,8 +157,9 @@ int main(int argc, char **argv)
 
     printf("\n");
 
-    /* Serial text, indented, without the blank lines Blargg ROMs emit. */
-    for (size_t i = 0; i < capture->length; i++) {
+    /* Serial text, indented, without the blank lines Blargg ROMs emit. A
+     * Mooneye verdict is register bytes, not text, so it is not echoed. */
+    for (size_t i = 0; i < capture->length && !capture->mooneye; i++) {
         char c = capture->text[i];
 
         if (c == '\n') {
@@ -132,7 +171,8 @@ int main(int argc, char **argv)
         }
     }
 
-    if (capture->length != 0 && capture->text[capture->length - 1] != '\n') {
+    if (!capture->mooneye && capture->length != 0 &&
+        capture->text[capture->length - 1] != '\n') {
         printf("\n");
     }
 

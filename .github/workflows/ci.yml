@@ -47,3 +47,14 @@ jobs:
 
       - name: Run a few frames headless
         run: SDL_VIDEODRIVER=dummy build/gameboy-sdl roms/dmg-acid2.gb --frames 60 --scale 2
+
+  # The Mooneye acceptance ROMs for the DMG. Known failures are listed in
+  # tools/mooneye-expected-failures.txt; a new failure fails the job.
+  mooneye:
+    name: Mooneye ROMs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the Mooneye ROMs
+        run: make -j"$(nproc)" mooneye

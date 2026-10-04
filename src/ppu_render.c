@@ -264,3 +264,51 @@ void ppu_render_scanline(Ppu *ppu)
         ppu->window_line++;
     }
 }
+
+unsigned ppu_drawing_dots(const Ppu *ppu)
+{
+    enum {
+        BASE_DOTS = 172,
+        SPRITE_DOTS = 6,
+        SPRITE_OVERLAP = 3,
+        RIGHT_EDGE_X = 168
+    };
+
+    unsigned dots = BASE_DOTS + (ppu->scx & 7);
+
+    if ((ppu->lcdc & PPU_LCDC_OBJ_ENABLE) == 0) {
+        return dots;
+    }
+
+    LineSprite sprites[SPRITES_PER_LINE];
+    unsigned count = select_sprites(ppu, sprites);
+    unsigned penalty = 0;
+    bool any = false;
+    unsigned previous_column = (unsigned)-1;
+
+    for (unsigned i = 0; i < count; i++) {
+        /* LineSprite.x is the screen column, OAM X minus 8. */
+        unsigned oam_x = (unsigned)(sprites[i].x + SPRITE_X_OFFSET);
+
+        if (oam_x >= RIGHT_EDGE_X) {
+            continue;
+        }
+
+        unsigned offset = oam_x + ppu->scx;
+        unsigned column = offset >> 3;
+
+        any = true;
+        penalty += SPRITE_DOTS;
+
+        /* The first sprite over a background tile waits for that tile's
+         * fetch to line up with it. */
+        if (column != previous_column) {
+            unsigned alignment = offset & 7;
+
+            penalty += alignment < 5 ? 5 - alignment : 0;
+            previous_column = column;
+        }
+    }
+
+    return any ? dots + penalty - SPRITE_OVERLAP : dots;
+}

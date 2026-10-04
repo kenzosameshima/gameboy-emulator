@@ -54,7 +54,7 @@ static void test_registers(void)
     assert(bus_read(&bus, TIMER_DIV_ADDRESS) == 0);
     assert(bus_read(&bus, TIMER_TIMA_ADDRESS) == 0);
     assert(bus_read(&bus, TIMER_TMA_ADDRESS) == 0);
-    assert(bus_read(&bus, TIMER_TAC_ADDRESS) == 0);
+    assert(bus_read(&bus, TIMER_TAC_ADDRESS) == 0xF8);
 
     advance_timer(&timer, 256);
     assert(bus_read(&bus, TIMER_DIV_ADDRESS) == 1);
@@ -68,7 +68,7 @@ static void test_registers(void)
     assert(bus_read(&bus, TIMER_TMA_ADDRESS) == 0x34);
 
     bus_write(&bus, TIMER_TAC_ADDRESS, 0xFF);
-    assert(bus_read(&bus, TIMER_TAC_ADDRESS) == TIMER_TAC_VALID_MASK);
+    assert(bus_read(&bus, TIMER_TAC_ADDRESS) == (TIMER_TAC_VALID_MASK | 0xF8));
 
     cleanup_timer(&cartridge);
 }

@@ -1,6 +1,6 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
 
 The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played; there is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
@@ -18,7 +18,7 @@ main.c            tools/rom_test.c
               +-- CPU  (cpu.c, cpu_ops.c, cpu_cb.c, cpu_alu.c)
               +-- Bus
               +-- Memory
-              +-- Cartridge (ROM-only, MBC1, MBC3)   [mapper seam: src/mapper.h]
+              +-- Cartridge (ROM-only, MBC1, MBC2, MBC3, MBC5)   [mapper seam: src/mapper.h]
               +-- InterruptRegisters (interrupts.c)
               +-- Timer
               +-- Serial
@@ -64,10 +64,12 @@ A bus access therefore sees the machine as it is after all the earlier M-cycles 
 
 - ROM file loading with transactional replacement.
 - Header parsing for the cartridge type and RAM size.
-- A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC3) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
-- ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size.
+- A mapper seam (`MapperOps` in `src/mapper.h`): `Cartridge` keeps loading, header parsing and the ROM and RAM buffers, and each mapper (ROM-only, MBC1, MBC2, MBC3, MBC5) is an adapter in its own file that decides how addresses map into them and holds its own registers. A new mapper is one new file plus a header-type entry.
+- ROM-only and MBC1 (`0x00`-`0x03`): ROM bank switching (5 + 2 bits, bank 0 remapped to 1), banking mode, RAM enable, and RAM banking. Bank numbers wrap to the ROM size. A 1 MiB ROM with the Nintendo logo at the start of at least two of its 256 KiB sections is treated as a multicart: 4 bank bits inside a game and the game picker shifted by 4.
 - MBC3 (`0x0F`-`0x13`): 7-bit ROM banking (bank 0 remapped to 1), RAM banking, and the real-time clock on the timer variants (`0x0F`, `0x10`). The clock registers (seconds, minutes, hours, 9-bit day, halt, day carry) are read through the latch (write 0 then 1 to `6000-7FFF`), writing the seconds restarts the current second, and the clock runs off the CPU clock (4194304 T-cycles per second), so it is deterministic. Pokémon Red/Blue (`0x13`) loads and runs. The clock is not persisted.
-- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so an MBC5 game (`0x19`) is reported as an unsupported header type `0x19`.
+- MBC2 (`0x05`, `0x06`): a 4-bit ROM bank register and 512 half-bytes of built-in RAM, both programmed through `0000-3FFF` where address bit 8 picks the register; the RAM reads with the top nibble set and repeats through `A000-BFFF`.
+- MBC5 (`0x19`-`0x1E`): 9-bit ROM banking up to 8 MiB where bank 0 is a real choice for the switchable window, and RAM banking up to 128 KiB. Rumble is ignored.
+- Unsupported cartridge types are rejected at load time instead of running with the wrong mapping. `cartridge_load()` reports why through `CartridgeLoadStatus` (unreadable file, out of memory, unsupported type), `emulator_load_rom()` maps that to distinct `EmulatorStatus` values, and `emulator_get_unsupported_cartridge_type()` returns the header type byte, so an MBC6 game (`0x20`) is reported as an unsupported header type `0x20`.
 - Cartridge RAM is not persisted to disk.
 
 ### CPU
@@ -90,15 +92,15 @@ Implemented interrupt registers and sources:
 | Serial | 3 | `0x0058` |
 | Joypad | 4 | `0x0060` |
 
-`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): priority selection, IME clearing, PC push, selective IF clearing, and the vector load. Priority and vectors are pure functions in `interrupts.c` (`interrupts_highest_priority()`, `interrupts_vector()`).
+`IF` is at `0xFF0F` and `IE` at `0xFFFF`. Hardware components raise interrupts with `interrupts_request()`. Dispatch takes 5 M-cycles (20 T-cycles): IME clearing, the PC push, priority selection, selective IF clearing, and the vector load. The interrupt is chosen after the high byte of PC has been pushed, so a push that lands on `IE` (SP at 0000 or 0001) can cancel the dispatch (PC becomes 0 and IF is left alone) or redirect it to a lower priority interrupt. `IF` reads with its upper three bits set, and `IE` keeps all eight bits. Priority and vectors are pure functions in `interrupts.c` (`interrupts_highest_priority()`, `interrupts_vector()`).
 
 HALT behavior distinguishes:
 
 - CPU halted without pending interrupt.
-- HALT wake-up when an interrupt is pending but IME is disabled.
+- HALT wake-up when an interrupt is pending but IME is disabled: HALT ends with no delay of its own and the next instruction runs at once.
 - Direct interrupt service when IME is enabled.
 
-`EI` uses delayed IME enable semantics. `DI` cancels IME and a pending enable. `RETI` restores PC from the stack and enables IME.
+`EI` uses delayed IME enable semantics, and an `EI` executed while an enable is already pending does not push it back. `DI` cancels IME and a pending enable. `RETI` restores PC from the stack and enables IME.
 
 ### Timer
 
@@ -107,28 +109,28 @@ Registers: DIV `0xFF04`, TIMA `0xFF05`, TMA `0xFF06`, TAC `0xFF07`.
 - Internal 16-bit divider, DIV exposing its high byte, DIV reset on write.
 - TAC frequency selection.
 - Falling-edge-based TIMA increments, including the falling edges caused by DIV and TAC writes.
-- Delayed TIMA reload after overflow, TIMA write cancellation, and TMA write behavior during the reload window.
+- Delayed TIMA reload after overflow, TIMA write cancellation in the cycle where TIMA reads 0, and the cycle after the reload where writes to TIMA are ignored and a write to TMA also reaches TIMA.
 - Timer interrupt requests through `IF.TIMER`.
 
 The Timer models the DMG normal-speed path. CGB double-speed behavior is not implemented.
 
 ### Serial
 
-Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started with the internal clock (`SC = 0x81`) reports its byte to the output callback, completes after 4096 T-cycles with `SB = 0xFF`, clears `SC` bit 7, and requests the serial interrupt. Writing `SC = 0x81` again restarts the transfer. The external clock never completes.
+Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started with the internal clock (`SC = 0x81`) reports its byte to the output callback, completes with `SB = 0xFF`, clears `SC` bit 7, and requests the serial interrupt. The serial clock is the system counter divided down: one bit is shifted on each falling edge of counter bit 8 (every 512 T-cycles, at multiples of 512 of the timer divider) and the transfer completes on the eighth edge after the `SC` write, so it takes between 3584 and 4096 cycles depending on where the divider is. Writing `SC = 0x81` again restarts the transfer. The external clock never completes.
 
 ### PPU
 
 The picture processing unit (`ppu.c`, `ppu_render.c`) owns VRAM, OAM, the LCD registers and the framebuffer.
 
-- Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing (172), HBlank, then VBlank on lines 144-153. `emulator_frame_count()` counts frames at VBlank entry.
-- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking).
-- VRAM is unreadable while drawing and OAM while scanning or drawing (reads give `0xFF`, writes are dropped), and both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0.
+- Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing, HBlank, then VBlank on lines 144-153. Drawing lasts 172 dots plus `SCX mod 8` plus, when sprites are on the line, the sum of their penalties minus 3 (6 dots per sprite with X below 168, and `max(0, 5 - (X + SCX) mod 8)` more for the first sprite over each 8-pixel background tile), which moves when HBlank starts; the rule was fitted to and verified by the Mooneye sprite timing ROM. `emulator_frame_count()` counts frames at VBlank entry.
+- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking). The OAM source also fires when line 144 starts. `LY` reads the next line from dot 452, while the `LY = LYC` flag reads 0 for those 4 dots and is recomputed when the line starts; the flag and the STAT line keep their values while the LCD is off.
+- VRAM and OAM are blocked to the CPU at slightly different dots for reads and writes (reads give `0xFF`, writes are dropped): OAM reads from dot 452 of the previous line until drawing ends, OAM writes during the scan except its last cycle and during drawing, VRAM reads from the scan's last cycle (dot 76) through drawing, and VRAM writes during drawing only. Both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0; turning it on starts line 0 in mode 0 with no OAM scan.
 - Scanline renderer: background with SCX/SCY wrap, both tile data addressing modes and both tile maps, window with its own line counter and WX < 7 handling, 8x8 and 8x16 sprites with flips, both palettes and the behind-background flag, DMG sprite priority (lower X first, then OAM order) and the ten-sprites-per-line limit. Shades 0 (lightest) to 3 (darkest) are available through `emulator_framebuffer()`.
 - `OAM DMA` writes use `ppu_oam_dma_write()`, which ignores the access lock like the hardware does.
 
 ### OAM DMA
 
-Writing a page number XX to `FF46` copies the 160 bytes at `XX00` into OAM, one per M-cycle, starting one M-cycle after the write; `FF46` reads back the last page. While it copies it owns the CPU bus: reads below `FF00` give `0xFF` and writes are dropped, so only the I/O registers and high RAM are reachable (games run their wait loop from HRAM for this reason). Sources from `E000` up read the work RAM mirror. Writing again while copying restarts the transfer. The DMA reads VRAM and OAM even when the PPU is using them.
+Writing a page number XX to `FF46` copies the 160 bytes at `XX00` into OAM, one per M-cycle; `FF46` reads back the last page. Counting the write as M-cycle 0, the CPU can still use every bus at M = 1, the transfer takes over from M = 2 and copies during M = 2 to M = 161, and everything is free again at M = 162. While it copies, the CPU shares a bus with it: OAM is always taken, and so is the bus the source is on, the external bus (ROM, cartridge RAM, work RAM and its echo) or the video bus (VRAM). Reads of a taken bus give `0xFF` and writes are dropped; the I/O registers and high RAM stay free (games run their wait loop from HRAM, or from work RAM when the source is VRAM). Sources from `E000` up read the work RAM mirror. Writing again while copying does not stop the transfer at once: it keeps the bus through the two start-up cycles and the new transfer begins after them. The DMA reads VRAM and OAM even when the PPU is using them.
 
 ### Joypad
 
@@ -176,7 +178,9 @@ src/cartridge.c         ROM/RAM ownership, loading, header parsing, mapper dispa
 src/mapper.h            MapperOps: the seam between Cartridge and a mapper
 src/mapper_rom_only.c   ROM-only mapper
 src/mapper_mbc1.c       MBC1 mapper
+src/mapper_mbc2.c       MBC2 mapper
 src/mapper_mbc3.c       MBC3 mapper and real-time clock
+src/mapper_mbc5.c       MBC5 mapper
 src/timer.c             Timer implementation
 src/serial.c            Serial port
 src/ppu.c               PPU state machine, registers, interrupts, VRAM/OAM access
@@ -297,13 +301,18 @@ The test suite includes:
 - `test_cpu_alu_exhaustive`: every 8-bit ALU, INC/DEC, rotate/shift and DAA input (plus ADD HL and SP+e8 samples) against an independent model; DAA is checked against decimal arithmetic on BCD operands.
 - `test_cpu`, `test_cpu_instructions`: register and memory wiring of INC/DEC and LD, jumps, and control behavior.
 - `test_interrupts`, `test_emulator_interrupts`: priority, service, HALT wake-up, EI, DI, RETI, and Timer-to-CPU service.
+- `test_cpu_edge_cases`: the cases the Mooneye ROMs found, as unit tests: an `EI` while an enable is pending, HALT waking with no extra cycle, interrupt dispatch when the PC push lands on `IE`, and the `IF`/`IE` register bits.
+- `test_timer_reload`: the M-cycles after a TIMA overflow, where TIMA reads 0, is reloaded, and then ignores writes while a TMA write also reaches it.
+- `test_emulator_boot_state`: what a ROM sees at its entry point, checked with real programs; so far the divider the boot ROM leaves (DIV reads 0xAB).
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
-- `test_serial`: register masks, transfer timing, restart, and the callback.
+- `test_serial`: register masks, transfer timing, restart, and the callback. Also the transfer's alignment to the system counter, checked for several divider phases including the boot ROM's.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
+- `test_cartridge_mbc2`: the ROM bank and RAM enable registers selected by address bit 8, and the 4-bit built-in RAM with its echo.
+- `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
-- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off.
+- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
-- `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a one-cycle start-up, what the CPU can reach while it runs, and restarts.
+- `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a two-cycle start-up, which bus the CPU loses for a work RAM source and for a VRAM source, and restarts.
 - `test_joypad`: the P1 groups and active-low lines, which bit each key lands on, and when the joypad interrupt fires.
 - `test_emulator_input_dma`: real programs through the whole machine that poll the joypad, wake from `STOP` on a button, and start a DMA from a routine in high RAM.
 - `test_acid2`: runs `roms/dmg-acid2.gb` and compares the picture with the reference screenshot pixel by pixel (`tests/data/dmg-acid2-reference.txt`, from the dmg-acid2 repository, MIT licence).
@@ -320,6 +329,14 @@ Runs Blargg's 11 individual `cpu_instrs` ROMs, the combined `cpu_instrs.gb`, and
 
 `roms/dmg-acid2.gb` reports through the screen, not the serial port, so `test_acid2` checks it instead.
 
+Run the Mooneye test suite (the ROMs that apply to a DMG; it is downloaded once into the ignored `roms/mooneye/`, from a fixed release checked against a SHA-256):
+
+```sh
+make mooneye
+```
+
+Mooneye ROMs report through the serial port as six bytes: the Fibonacci numbers `3 5 8 13 21 34` for a pass, or `0x42` six times for a failure; `rom_test` recognises both that and Blargg's text. The ROMs that are known to fail are listed in `tools/mooneye-expected-failures.txt`: `make mooneye` fails only for a ROM that is not on the list and reports listed ROMs that now pass. CI runs it.
+
 To run one ROM with a custom budget:
 
 ```sh
@@ -329,18 +346,17 @@ make build/rom_test
 
 ## Coverage and Limitations
 
-- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
-- No audio. OAM DMA blocks the whole range below `FF00` while it copies, which is the case for a source in ROM or RAM but more than a DMG blocks when the source is VRAM; its start timing is approximate (a one M-cycle delay), and the Mooneye DMA timing ROMs have not been run.
-- Only ROM-only, MBC1 and MBC3 cartridges. MBC2, MBC5 and others are rejected at load time.
+- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and the window adds no dots to drawing. The LY = 153 early-zero quirk, the STAT write quirk and the OAM bug are not modelled.
+- No audio. A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
+- Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
-- Interrupt dispatch does not model the `IE` write during the high-byte push.
-- Register power-on values are the DMG post-boot CPU registers only. DIV and the hardware I/O registers start at zero, and `IF`/`TAC` unused bits read as zero rather than one.
+- Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
 - No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Validate against Mooneye acceptance ROMs. They signal a pass with `LD B,B` and the Fibonacci values in the registers, so the runner needs to detect that instead of serial text. Along the way: power-on DIV, `IF`/`TAC` upper bits, and the HALT bug.
+1. Close the remaining Mooneye failures (93 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the HALT bug, and the window's effect on mode 3 length.
 2. Battery saves, then audio.

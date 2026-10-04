@@ -46,9 +46,11 @@ typedef struct Bus {
  * The timer, serial port, PPU, DMA and joypad are optional: without them
  * their addresses read 0xFF and ignore writes.
  *
- * While OAM DMA is copying, bus_read() and bus_write() reach only FF00-FFFF
- * (the I/O registers and high RAM): everything below reads 0xFF and ignores
- * writes, as on hardware. The DMA itself reads through bus_dma_read().
+ * While OAM DMA is copying, bus_read() and bus_write() cannot reach OAM or
+ * the bus the DMA source is on (the external bus for ROM, cartridge RAM, work
+ * RAM and echo; the video bus for VRAM): reads give 0xFF and writes are
+ * ignored, as on hardware. The I/O registers and high RAM stay reachable.
+ * The DMA itself reads through bus_dma_read().
  */
 
 void bus_init(

@@ -15,7 +15,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
     emulator->cycles += cycles;
 
     timer_step(&emulator->timer, cycles);
-    serial_step(&emulator->serial, cycles);
+    serial_step(&emulator->serial, cycles, emulator->timer.divider);
     dma_step(&emulator->dma, cycles);
     ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);
@@ -31,6 +31,7 @@ static void emulator_reset(Emulator *emulator)
     memory_init(&emulator->memory);
     interrupts_init(&emulator->interrupts);
     timer_init(&emulator->timer, &emulator->interrupts);
+    timer_power_on(&emulator->timer);
     ppu_init(&emulator->ppu, &emulator->interrupts);
     dma_init(&emulator->dma, &emulator->bus, &emulator->ppu);
     joypad_init(&emulator->joypad, &emulator->interrupts);

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <bus.h>
 #include <cartridge.h>
@@ -224,15 +225,15 @@ static void test_unsupported_cartridge_is_rejected(void)
 
     uint8_t *loaded_rom = cartridge.rom;
 
-    /* 0x19 is MBC5, which is not implemented. */
-    write_banked_rom(4, 0x19, 0x00);
+    /* 0x20 is MBC6, which is not implemented. */
+    write_banked_rom(4, 0x20, 0x00);
     uint8_t unsupported_type = 0;
 
     assert(
         cartridge_load(&cartridge, rom_path, &unsupported_type) ==
         CARTRIDGE_LOAD_UNSUPPORTED_TYPE
     );
-    assert(unsupported_type == 0x19);
+    assert(unsupported_type == 0x20);
 
     /* The type output is optional. */
     assert(
@@ -244,6 +245,98 @@ static void test_unsupported_cartridge_is_rejected(void)
     assert(cartridge.rom == loaded_rom);
     assert(cartridge.mapper == CARTRIDGE_MAPPER_MBC1);
     assert(cartridge.ram_size == 0x8000);
+
+    cartridge_destroy(&cartridge);
+    remove(rom_path);
+}
+
+/*
+ * A multicart packs up to four 256 KiB games into one 1 MiB MBC1 ROM, each
+ * starting with its own header. The bank registers are wired differently:
+ * the 4 low bits pick a bank inside the game and the 2 high bits the game,
+ * shifted by 4 instead of 5. Such a ROM is recognised by the Nintendo logo
+ * at the start of more than one of its 256 KiB sections.
+ */
+static void write_multicart_rom(int with_logos)
+{
+    enum { BANKS = 64 };
+
+    size_t size = (size_t)BANKS * BANK_SIZE;
+    uint8_t *rom = calloc(size, sizeof(uint8_t));
+
+    assert(rom != NULL);
+
+    for (unsigned bank = 0; bank < BANKS; bank++) {
+        rom[(size_t)bank * BANK_SIZE] = (uint8_t)bank;
+    }
+
+    if (with_logos) {
+        static const uint8_t logo[48] = {
+            0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
+            0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+            0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+            0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+            0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
+            0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E
+        };
+
+        for (unsigned game = 0; game < 4; game++) {
+            memcpy(&rom[(size_t)game * 16 * BANK_SIZE + 0x104], logo,
+                   sizeof(logo));
+        }
+    }
+
+    rom[CARTRIDGE_HEADER_TYPE] = 0x01;
+    test_write_file(rom_path, rom, size);
+    free(rom);
+}
+
+static void test_multicart_wiring(void)
+{
+    Cartridge cartridge;
+
+    write_multicart_rom(1);
+    cartridge_init(&cartridge);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
+
+    for (unsigned game = 0; game < 4; game++) {
+        cartridge_write(&cartridge, 0x4000, (uint8_t)game);
+
+        /* Low bits 0 become 1; each game has 16 banks. */
+        cartridge_write(&cartridge, 0x2000, 0x00);
+        assert(cartridge_read(&cartridge, 0x4000) == game * 16 + 1);
+
+        cartridge_write(&cartridge, 0x2000, 0x05);
+        assert(cartridge_read(&cartridge, 0x4000) == game * 16 + 5);
+
+        /* Only 4 bits count, but the 0 -> 1 remap looks at all 5: writing
+         * 0x10 selects bank 0 of the game, not bank 1. */
+        cartridge_write(&cartridge, 0x2000, 0x10);
+        assert(cartridge_read(&cartridge, 0x4000) == game * 16);
+
+        cartridge_write(&cartridge, 0x2000, 0x1F);
+        assert(cartridge_read(&cartridge, 0x4000) == game * 16 + 15);
+
+        /* Advanced mode puts the game's first bank at 0000-3FFF. */
+        cartridge_write(&cartridge, 0x6000, 0x01);
+        assert(cartridge_read(&cartridge, 0x0000) == game * 16);
+        cartridge_write(&cartridge, 0x6000, 0x00);
+        assert(cartridge_read(&cartridge, 0x0000) == 0);
+    }
+
+    cartridge_destroy(&cartridge);
+
+    /* The same size without the logos is an ordinary MBC1 ROM. */
+    write_multicart_rom(0);
+    cartridge_init(&cartridge);
+    assert(
+        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+    );
+    cartridge_write(&cartridge, 0x4000, 0x01);
+    cartridge_write(&cartridge, 0x2000, 0x05);
+    assert(cartridge_read(&cartridge, 0x4000) == 32 + 5);
 
     cartridge_destroy(&cartridge);
     remove(rom_path);
@@ -282,6 +375,7 @@ int main(void)
     test_bus_routes_mapper_and_ram();
     test_unsupported_cartridge_is_rejected();
     test_rom_only_ignores_mapper_writes();
+    test_multicart_wiring();
 
     printf("MBC1 cartridge tests passed!\n");
 

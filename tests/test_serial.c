@@ -18,10 +18,20 @@ static void capture_byte(void *context, uint8_t byte)
     capture->bytes[capture->count++] = byte;
 }
 
+/* The system counter the serial clock is divided from; the Emulator passes
+ * the timer's divider after each M-cycle. These tests drive it themselves. */
+static uint16_t divider;
+
+static void step_one(Serial *serial)
+{
+    divider = (uint16_t)(divider + 4);
+    serial_step(serial, 4, divider);
+}
+
 static void step_cycles(Serial *serial, unsigned cycles)
 {
     for (unsigned done = 0; done < cycles; done += 4) {
-        serial_step(serial, 4);
+        step_one(serial);
     }
 }
 
@@ -32,6 +42,7 @@ static void test_registers(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
+    divider = 0;
 
     assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0x00);
     /* Only bits 7 and 0 of SC are implemented; the rest read as 1. */
@@ -54,6 +65,7 @@ static void test_transfer_with_internal_clock(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
+    divider = 0;
     serial_set_output(&serial, capture_byte, &capture);
 
     serial_write(&serial, SERIAL_SB_ADDRESS, 'A');
@@ -70,7 +82,7 @@ static void test_transfer_with_internal_clock(void)
     assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0xFF);
     assert(interrupts.interrupt_flag == 0);
 
-    serial_step(&serial, 4);
+    step_one(&serial);
 
     /* No partner: the line reads all ones, the transfer flag clears. */
     assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0xFF);
@@ -84,6 +96,57 @@ static void test_transfer_with_internal_clock(void)
     assert(capture.count == 1);
 }
 
+/*
+ * The serial clock is the system counter divided down: a transfer shifts one
+ * bit on each falling edge of counter bit 8, which is every 512 T-cycles at
+ * multiples of 512, and completes on the eighth. A transfer started between
+ * edges therefore finishes sooner than 4096 cycles after the write, and one
+ * started just after an edge almost exactly 4096.
+ */
+static unsigned cycles_to_complete(uint16_t start_divider)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+    divider = start_divider;
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+
+    unsigned cycles = 0;
+
+    while (interrupts.interrupt_flag == 0) {
+        step_one(&serial);
+        cycles += 4;
+        assert(cycles <= 2 * SERIAL_TRANSFER_CYCLES);
+    }
+
+    return cycles;
+}
+
+static void test_transfer_aligns_to_the_system_counter(void)
+{
+    /* On an edge boundary: the first edge is 512 cycles away. */
+    assert(cycles_to_complete(0x0000) == 4096);
+
+    /* Halfway to the next edge. */
+    assert(cycles_to_complete(0x0100) == 4096 - 256);
+
+    /* Just after an edge, and just before one. */
+    assert(cycles_to_complete(0x0004) == 4096 - 4);
+    assert(cycles_to_complete(0x01FC) == 4096 - 508);
+
+    /* The same offsets in another 512-cycle window of the counter. */
+    assert(cycles_to_complete(0x1100) == 4096 - 256);
+    assert(cycles_to_complete(0xFE00) == 4096);
+
+    /* The phase the DMG boot ROM leaves: 0xABCC, 52 cycles before an edge. */
+    assert(cycles_to_complete(0xABCC) == 52 + 7 * 512);
+
+    /* The counter wraps. */
+    assert(cycles_to_complete(0xFF00) == 4096 - 256);
+}
+
 static void test_restart_and_external_clock(void)
 {
     InterruptRegisters interrupts;
@@ -92,6 +155,7 @@ static void test_restart_and_external_clock(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
+    divider = 0;
     serial_set_output(&serial, capture_byte, &capture);
 
     /* Back-to-back writes each report their byte, as a game printing text. */
@@ -105,10 +169,13 @@ static void test_restart_and_external_clock(void)
     assert(capture.bytes[0] == 'H');
     assert(capture.bytes[1] == 'i');
 
-    /* The restart counts the full transfer again. */
-    step_cycles(&serial, SERIAL_TRANSFER_CYCLES - 4);
+    /*
+     * The restart counts eight edges again from where the counter is: it
+     * was written at counter 100, so the eighth edge is the one at 4096.
+     */
+    step_cycles(&serial, SERIAL_TRANSFER_CYCLES - 100 - 4);
     assert(interrupts.interrupt_flag == 0);
-    serial_step(&serial, 4);
+    step_one(&serial);
     assert(interrupts.interrupt_flag == INTERRUPT_SERIAL);
 
     /* External clock: waits for a partner that never comes. */
@@ -130,6 +197,7 @@ static void test_reset_keeps_output(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
+    divider = 0;
     serial_set_output(&serial, capture_byte, &capture);
 
     serial_write(&serial, SERIAL_SB_ADDRESS, 'Z');
@@ -154,6 +222,7 @@ int main(void)
 {
     test_registers();
     test_transfer_with_internal_clock();
+    test_transfer_aligns_to_the_system_counter();
     test_restart_and_external_clock();
     test_reset_keeps_output();
 

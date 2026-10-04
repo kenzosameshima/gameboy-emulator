@@ -10,7 +10,9 @@
 typedef enum {
     CARTRIDGE_MAPPER_NONE,
     CARTRIDGE_MAPPER_MBC1,
-    CARTRIDGE_MAPPER_MBC3
+    CARTRIDGE_MAPPER_MBC2,
+    CARTRIDGE_MAPPER_MBC3,
+    CARTRIDGE_MAPPER_MBC5
 } CartridgeMapper;
 
 enum {
@@ -20,6 +22,19 @@ enum {
     CARTRIDGE_HEADER_TYPE = 0x0147,
     CARTRIDGE_HEADER_RAM_SIZE = 0x0149
 };
+
+/* MBC2 registers. Private to the MBC2 mapper (src/mapper_mbc2.c). */
+typedef struct Mbc2State {
+    bool ram_enabled;
+    uint8_t rom_bank;   /* 4 bits, written 0 is stored as 1 */
+} Mbc2State;
+
+/* MBC5 registers. Private to the MBC5 mapper (src/mapper_mbc5.c). */
+typedef struct Mbc5State {
+    bool ram_enabled;
+    uint16_t rom_bank;  /* 9 bits; unlike the others, 0 is a real bank */
+    uint8_t ram_bank;   /* 4 bits */
+} Mbc5State;
 
 /* One set of MBC3 real-time clock registers. */
 typedef struct RtcRegisters {
@@ -49,6 +64,7 @@ typedef struct Mbc1State {
     uint8_t bank_low;     /* 5 bits, written 0 is stored as 1 */
     uint8_t bank_high;    /* 2 bits */
     bool banking_mode;    /* false: simple, true: advanced */
+    bool multicart;       /* four games in 1 MiB: 4 bank bits, game picker at bit 4 */
 } Mbc1State;
 
 /*
@@ -71,7 +87,9 @@ typedef struct Cartridge {
 
     union {
         Mbc1State mbc1;
+        Mbc2State mbc2;
         Mbc3State mbc3;
+        Mbc5State mbc5;
     } state;
 } Cartridge;
 
@@ -90,8 +108,9 @@ typedef enum {
 
 /*
  * Loads a ROM file and configures the mapper from the header.
- * Supported cartridge types: 00 (ROM only), 01-03 (MBC1, +RAM, +BATTERY)
- * and 0F-13 (MBC3, +TIMER, +RAM, +BATTERY). Battery contents and the clock
+ * Supported cartridge types: 00 (ROM only), 01-03 (MBC1, +RAM, +BATTERY),
+ * 05-06 (MBC2, +BATTERY), 0F-13 (MBC3, +TIMER, +RAM, +BATTERY) and 19-1E
+ * (MBC5, +RUMBLE, +RAM, +BATTERY; rumble is ignored). Battery contents and the clock
  * are not persisted. Files too small to
  * contain a header are loaded as ROM only.
  *
