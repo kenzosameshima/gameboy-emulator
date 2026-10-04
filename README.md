@@ -351,12 +351,12 @@ make build/rom_test
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time. MBC1 multicart wiring is not detected.
 - Cartridge RAM is not saved to disk.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
-- Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of `TAC` and other registers read as zero rather than one.
+- Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
 - No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (84 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
+1. Close the remaining Mooneye failures (85 of 94 DMG ROMs pass): the PPU's variable mode 3 length and its interrupt and LCD-on timing, the I/O power-on values and unused bits (these need the audio registers too), the serial clock alignment at boot, MBC1 multicart wiring, and the HALT bug.
 2. Battery saves, then audio.

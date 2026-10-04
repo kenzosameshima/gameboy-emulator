@@ -102,7 +102,8 @@ uint8_t timer_read(const Timer *timer, uint16_t address)
             return timer->tma;
 
         case TIMER_TAC_ADDRESS:
-            return timer->tac;
+            /* The unused bits read as 1. */
+            return (uint8_t)(timer->tac | 0xF8);
 
         default:
             return 0xFF;

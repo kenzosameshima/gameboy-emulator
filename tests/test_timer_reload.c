@@ -129,12 +129,30 @@ static void test_cycle_c_is_ordinary_again(void)
     assert(timer_read(&timer, TIMER_TMA_ADDRESS) == 0x77);
 }
 
+/* The unused bits of TAC read as 1. */
+static void test_tac_unused_bits(void)
+{
+    setup();
+
+    timer_write(&timer, TIMER_TAC_ADDRESS, 0x05);
+    assert(timer_read(&timer, TIMER_TAC_ADDRESS) == 0xFD);
+
+    timer_write(&timer, TIMER_TAC_ADDRESS, 0x00);
+    assert(timer_read(&timer, TIMER_TAC_ADDRESS) == 0xF8);
+
+    /* Only the low three bits are stored. */
+    timer_write(&timer, TIMER_TAC_ADDRESS, 0xFF);
+    assert(timer_read(&timer, TIMER_TAC_ADDRESS) == 0xFF);
+    assert(timer.tac == 0x07);
+}
+
 int main(void)
 {
     test_overflow_timeline();
     test_write_to_tima_in_cycle_a_cancels_the_reload();
     test_cycle_b_ignores_tima_and_loads_tma();
     test_cycle_c_is_ordinary_again();
+    test_tac_unused_bits();
 
     printf("Timer reload cycle tests passed!\n");
 
