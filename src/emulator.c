@@ -16,6 +16,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
 
     timer_step(&emulator->timer, cycles);
     serial_step(&emulator->serial, cycles);
+    cartridge_step(&emulator->cartridge, cycles);
 }
 
 
@@ -264,7 +265,7 @@ const char *emulator_status_string(EmulatorStatus status)
             return "ROM file could not be read or is empty";
 
         case EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE:
-            return "unsupported cartridge type (only ROM-only and MBC1)";
+            return "unsupported cartridge type (supported: ROM-only, MBC1, MBC3)";
 
         case EMULATOR_ERROR_OUT_OF_MEMORY:
             return "out of memory";

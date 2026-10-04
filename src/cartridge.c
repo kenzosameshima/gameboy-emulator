@@ -13,7 +13,12 @@ enum {
     CARTRIDGE_TYPE_ROM_ONLY = 0x00,
     CARTRIDGE_TYPE_MBC1 = 0x01,
     CARTRIDGE_TYPE_MBC1_RAM = 0x02,
-    CARTRIDGE_TYPE_MBC1_RAM_BATTERY = 0x03
+    CARTRIDGE_TYPE_MBC1_RAM_BATTERY = 0x03,
+    CARTRIDGE_TYPE_MBC3_TIMER_BATTERY = 0x0F,
+    CARTRIDGE_TYPE_MBC3_TIMER_RAM_BATTERY = 0x10,
+    CARTRIDGE_TYPE_MBC3 = 0x11,
+    CARTRIDGE_TYPE_MBC3_RAM = 0x12,
+    CARTRIDGE_TYPE_MBC3_RAM_BATTERY = 0x13
 };
 
 static size_t cartridge_ram_size_from_header(uint8_t code)
@@ -64,6 +69,20 @@ static bool cartridge_configure(
             );
             return true;
 
+        case CARTRIDGE_TYPE_MBC3_TIMER_BATTERY:
+        case CARTRIDGE_TYPE_MBC3:
+            *mapper = CARTRIDGE_MAPPER_MBC3;
+            return true;
+
+        case CARTRIDGE_TYPE_MBC3_TIMER_RAM_BATTERY:
+        case CARTRIDGE_TYPE_MBC3_RAM:
+        case CARTRIDGE_TYPE_MBC3_RAM_BATTERY:
+            *mapper = CARTRIDGE_MAPPER_MBC3;
+            *ram_size = cartridge_ram_size_from_header(
+                rom[CARTRIDGE_HEADER_RAM_SIZE]
+            );
+            return true;
+
         default:
             return false;
     }
@@ -83,7 +102,8 @@ static size_t cartridge_rom_bank_mask(size_t rom_size)
 
 static const MapperOps *const MAPPER_TABLE[] = {
     [CARTRIDGE_MAPPER_NONE] = &MAPPER_ROM_ONLY,
-    [CARTRIDGE_MAPPER_MBC1] = &MAPPER_MBC1
+    [CARTRIDGE_MAPPER_MBC1] = &MAPPER_MBC1,
+    [CARTRIDGE_MAPPER_MBC3] = &MAPPER_MBC3
 };
 
 const MapperOps *cartridge_mapper_ops(CartridgeMapper mapper)
@@ -252,6 +272,19 @@ void cartridge_write(
         address,
         value
     );
+}
+
+void cartridge_step(Cartridge *cartridge, CpuCycles cycles)
+{
+    if (cartridge == NULL) {
+        return;
+    }
+
+    const MapperOps *ops = cartridge_mapper_ops(cartridge->mapper);
+
+    if (ops->step != NULL) {
+        ops->step(cartridge, cycles);
+    }
 }
 
 uint8_t cartridge_read_ram(
