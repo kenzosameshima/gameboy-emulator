@@ -39,7 +39,8 @@ static void joypad_update(Joypad *joypad)
 
 void joypad_init(Joypad *joypad, InterruptRegisters *interrupts)
 {
-    joypad->select = SELECT_MASK;
+    /* The boot ROM leaves both groups selected. */
+    joypad->select = 0;
     joypad->pressed = 0;
     joypad->lines = LINES_MASK;
     joypad->interrupts = interrupts;

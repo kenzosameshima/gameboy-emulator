@@ -3,11 +3,18 @@
  * into Game Boy buttons and runs the machine at the real frame rate.
  *
  * Usage: gameboy-sdl <rom> [--scale N] [--gray] [--frames N] [--no-save]
+ *                    [--mute]
  *
  *   --scale N   window size as a multiple of 160x144 (default 4)
  *   --gray      grayscale instead of the classic green palette
  *   --frames N  exit after N frames (for smoke tests)
  *   --no-save   do not load or write the battery save
+ *   --mute      no sound
+ *
+ * Sound is played through SDL's audio queue, and the machine is paced by how
+ * much is queued, so picture and sound stay together. Without an audio device
+ * it falls back to pacing by the clock. The emulator's raw mix is high-pass
+ * filtered here, as the hardware does, to take the DC offset out.
  *
  * A cartridge with a battery keeps its RAM (and an MBC3 clock) in a .sav file
  * next to the ROM, with the same name: it is loaded at start, written every
@@ -34,8 +41,20 @@ enum {
     DEFAULT_SCALE = 4,
     SAVE_INTERVAL_MS = 30000,
     SAVE_PATH_CAPACITY = 1024,
-    CYCLES_PER_FRAME = 70224
+    CYCLES_PER_FRAME = 70224,
+
+    AUDIO_RATE = 48000,
+    AUDIO_BUFFER_FRAMES = 1024,     /* SDL's device buffer */
+    AUDIO_CHUNK_FRAMES = 2048,      /* taken from the emulator per video frame */
+    AUDIO_LATENCY_FRAMES = 2400,    /* 50 ms queued ahead of the speakers */
+    AUDIO_FRAME_BYTES = 2 * sizeof(int16_t)
 };
+
+/*
+ * The DMG's output capacitor keeps 0.999958 of its charge each clock. At 48 kHz
+ * a sample is 4194304 / 48000 = 87.38 clocks, so it keeps 0.999958^87.38.
+ */
+#define HIGH_PASS_CHARGE 0.996337f
 
 /* 4194304 Hz / 70224 cycles per frame, as nanoseconds per frame. */
 #define FRAME_NANOSECONDS 16742706ull
@@ -97,6 +116,7 @@ typedef struct Options {
     unsigned long frames;   /* 0 means run until the window is closed */
     const uint32_t *palette;
     int save;               /* load and write the battery save */
+    int audio;              /* play sound */
 } Options;
 
 static int parse_options(int argc, char **argv, Options *options)
@@ -106,6 +126,7 @@ static int parse_options(int argc, char **argv, Options *options)
     options->frames = 0;
     options->palette = PALETTE_GREEN;
     options->save = 1;
+    options->audio = 1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
@@ -120,6 +141,8 @@ static int parse_options(int argc, char **argv, Options *options)
             options->palette = PALETTE_GRAY;
         } else if (strcmp(argv[i], "--no-save") == 0) {
             options->save = 0;
+        } else if (strcmp(argv[i], "--mute") == 0) {
+            options->audio = 0;
         } else if (argv[i][0] != '-' && options->rom == NULL) {
             options->rom = argv[i];
         } else {
@@ -203,9 +226,99 @@ static void draw_frame(const Emulator *emulator, const uint32_t *palette,
     }
 }
 
+/* The speakers: SDL's audio queue and the filter state that goes with it. */
+typedef struct Audio {
+    SDL_AudioDeviceID device;   /* 0 when there is no sound */
+    float capacitor_left;
+    float capacitor_right;
+} Audio;
+
+/* Opens the default device and tells the emulator to produce for it. */
+static void audio_open(Audio *audio, Emulator *emulator)
+{
+    SDL_AudioSpec want;
+
+    memset(audio, 0, sizeof(*audio));
+    memset(&want, 0, sizeof(want));
+    want.freq = AUDIO_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = AUDIO_BUFFER_FRAMES;
+
+    /* Sound is optional: with no audio driver the machine runs silent. */
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+        fprintf(stderr, "No sound: %s\n", SDL_GetError());
+        return;
+    }
+
+    /* No changes allowed: SDL converts if the device wants something else. */
+    audio->device = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+
+    if (audio->device == 0) {
+        fprintf(stderr, "No sound: %s\n", SDL_GetError());
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return;
+    }
+
+    emulator_set_audio_sample_rate(emulator, AUDIO_RATE);
+    SDL_PauseAudioDevice(audio->device, 0);
+}
+
+static void audio_close(Audio *audio)
+{
+    if (audio->device != 0) {
+        SDL_CloseAudioDevice(audio->device);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    }
+}
+
+/* One side of the hardware's high-pass filter: what the capacitor has not
+ * yet charged to. */
+static int16_t high_pass(float *capacitor, int16_t sample)
+{
+    float out = (float)sample - *capacitor;
+
+    *capacitor = (float)sample - out * HIGH_PASS_CHARGE;
+
+    if (out > INT16_MAX) {
+        return INT16_MAX;
+    }
+
+    return out < INT16_MIN ? INT16_MIN : (int16_t)out;
+}
+
+/* Sends what the machine has produced since the last call to the speakers. */
+static void audio_queue(Audio *audio, Emulator *emulator)
+{
+    static int16_t chunk[2 * AUDIO_CHUNK_FRAMES];
+    size_t frames = emulator_take_audio(emulator, chunk, AUDIO_CHUNK_FRAMES);
+
+    for (size_t i = 0; i < frames; i++) {
+        chunk[2 * i] = high_pass(&audio->capacitor_left, chunk[2 * i]);
+        chunk[2 * i + 1] = high_pass(&audio->capacitor_right,
+                                     chunk[2 * i + 1]);
+    }
+
+    if (SDL_QueueAudio(audio->device, chunk,
+                       (uint32_t)(frames * AUDIO_FRAME_BYTES)) != 0) {
+        fprintf(stderr, "Could not queue sound: %s\n", SDL_GetError());
+    }
+}
+
+/* Waits until the speakers have played the queue down to the latency
+ * target. This is what keeps the machine at the real speed. */
+static void audio_wait(const Audio *audio)
+{
+    while (SDL_GetQueuedAudioSize(audio->device) >
+           AUDIO_LATENCY_FRAMES * AUDIO_FRAME_BYTES) {
+        SDL_Delay(1);
+    }
+}
+
 static int run(
     Emulator *emulator,
     const Options *options,
+    Audio *audio,
     const char *save_path
 )
 {
@@ -317,6 +430,10 @@ static int run(
             last_save = SDL_GetTicks();
         }
 
+        if (audio->device != 0) {
+            audio_queue(audio, emulator);
+        }
+
         draw_frame(emulator, options->palette, pixels);
         SDL_UpdateTexture(texture, NULL, pixels,
                           EMULATOR_SCREEN_WIDTH * (int)sizeof(uint32_t));
@@ -330,8 +447,13 @@ static int run(
             break;
         }
 
-        /* Keep the real frame rate; if we fall behind, do not try to
-         * catch up with a burst. */
+        if (audio->device != 0) {
+            audio_wait(audio);
+            continue;
+        }
+
+        /* No sound to pace by: keep the real frame rate with the clock. If we
+         * fall behind, do not try to catch up with a burst. */
         next_frame += frame_ticks;
 
         uint64_t now = SDL_GetPerformanceCounter();
@@ -415,8 +537,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int exit_code = run(emulator, &options, save);
+    Audio audio = { 0 };
 
+    if (options.audio) {
+        audio_open(&audio, emulator);
+    }
+
+    int exit_code = run(emulator, &options, &audio, save);
+
+    audio_close(&audio);
     SDL_Quit();
     emulator_destroy(emulator);
 

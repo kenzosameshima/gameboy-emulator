@@ -1,8 +1,8 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA and a joypad, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA, a joypad and an APU (sound), and it passes Blargg's CPU instruction, memory timing and sound test ROMs, the dmg-acid2 picture test and all 94 DMG Mooneye acceptance ROMs.
 
-The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played; there is no audio yet. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
+The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played with sound. The APU queues mixed stereo frames at a rate the front end chooses (`emulator_set_audio_sample_rate()`, `emulator_take_audio()`). Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
 ## Current Architecture
 
@@ -136,6 +136,12 @@ Writing a page number XX to `FF46` copies the 160 bytes at `XX00` into OAM, one 
 
 `FF00` (P1) selects the direction keys (bit 4 low) or the buttons (bit 5 low) and reads the selected group in bits 0-3, where 0 means pressed; bits 6-7 read 1. The front end reports the held set with `emulator_set_buttons()` using the `EMULATOR_BUTTON_*` bits. A key pressed in a selected group, or a group selected while a key is held, pulls a line low and requests the joypad interrupt, which also ends `STOP`. Because input can end `STOP` at any time, `STOP` is never reported as stalled.
 
+### APU
+
+The audio processing unit (`apu.c`) has the four channels (two pulse channels, the first with a frequency sweep, a wave channel and a noise channel), each with a length counter, envelopes on all but the wave channel, and the mixer with `NR50` and `NR51`. The 512 Hz frame sequencer is clocked by the falling edge of bit 12 of the timer's divider, so writing `DIV` clocks it as on hardware. Registers read with their unused bits set, powering off (`NR52` bit 7) clears them and ignores writes except to the length counters, which survive as on the DMG, and wave RAM stays accessible. The DMG's quirks are modelled: the extra length clock when a length counter is enabled before a step that does not clock lengths, the counter reloading one short on a trigger, the sweep's negate and overflow rules, and wave RAM, which while the channel plays can only be read or written in the cycle the channel fetches a sample (it reads `0xFF` otherwise) and is damaged by a retrigger just as it fetches.
+
+The channels advance in whole M-cycles, and the mixer averages the output over each output frame, so an edge that falls inside an M-cycle takes effect on the next. With a sample rate set, the core produces the plain mix of the four DACs; it does not high-pass filter it, which the SDL front end does with the hardware's capacitor constants. A rate of 0, the default, produces nothing.
+
 ## Memory Map Currently Used
 
 ```text
@@ -148,6 +154,8 @@ FE00-FE9F   OAM (sprite attributes)
 FF01-FF02   Serial
 FF00        Joypad (P1)
 FF04-FF07   Timer registers
+FF10-FF26   Sound registers (NR10-NR52)
+FF30-FF3F   Wave RAM
 FF40-FF45   LCD registers (LCDC, STAT, SCY, SCX, LY, LYC)
 FF46        OAM DMA
 FF47-FF4B   LCD palettes and window (BGP, OBP0, OBP1, WY, WX)
@@ -188,6 +196,7 @@ src/ppu.c               PPU state machine, registers, interrupts, VRAM/OAM acces
 src/ppu_render.c        PPU scanline renderer
 src/dma.c               OAM DMA
 src/joypad.c            Joypad register and interrupt
+src/apu.c               Sound channels, frame sequencer, mixer and sample queue
 tools/rom_test.c        Headless test ROM runner
 tools/frame_dump.c      Runs a ROM and saves the LCD picture as a PNG
 tests/                  Unit and integration tests
@@ -245,7 +254,7 @@ make sdl
 | Right `Shift` or `Backspace` | Select |
 | `Esc` | Quit |
 
-Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display) and `--no-save`. The window can be resized and keeps its shape. There is no audio and no pause key yet. A cartridge with a battery keeps its RAM (and an MBC3 clock) in a `.sav` file next to the ROM, with the same name: it is loaded at start, written every 30 seconds and when the program ends. `--no-save` turns that off.
+Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display), `--no-save` and `--mute`. The window can be resized and keeps its shape. There is no pause key yet. Sound plays through SDL's audio queue at 48 kHz, and the machine is paced by how much is queued, so picture and sound stay together; without an audio device it says so and paces by the clock. A cartridge with a battery keeps its RAM (and an MBC3 clock) in a `.sav` file next to the ROM, with the same name: it is loaded at start, written every 30 seconds and when the program ends. `--no-save` turns that off.
 
 ### Command line
 
@@ -316,6 +325,8 @@ The test suite includes:
 - `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
 - `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a two-cycle start-up, which bus the CPU loses for a work RAM source and for a VRAM source, and restarts.
+- `test_apu`: the register read masks and boot values, power on and off, status and DAC rules, the frame sequencer's length, sweep and envelope steps (including a DIV write clocking it), the length quirks, the noise generator, the wave RAM access rules and retrigger damage, and the mixed output (duty cycles, panning, NR50, the sample queue); expected values come from the documented hardware behaviour, not from the code.
+- `test_emulator_audio`: a program plays a note and the frames come out of `emulator_take_audio()` at the requested rate, which survives loading a ROM.
 - `test_joypad`: the P1 groups and active-low lines, which bit each key lands on, and when the joypad interrupt fires.
 - `test_emulator_input_dma`: real programs through the whole machine that poll the joypad, wake from `STOP` on a button, and start a DMA from a routine in high RAM.
 - `test_acid2`: runs `roms/dmg-acid2.gb` and compares the picture with the reference screenshot pixel by pixel (`tests/data/dmg-acid2-reference.txt`, from the dmg-acid2 repository, MIT licence).
@@ -328,7 +339,7 @@ The test suite includes:
 make rom-test
 ```
 
-Runs Blargg's 11 individual `cpu_instrs` ROMs, the combined `cpu_instrs.gb`, and `mem_timing.gb` headless under a cycle budget. A ROM passes when it prints `Passed` over the serial port. All of them pass.
+Runs Blargg's 11 individual `cpu_instrs` ROMs, the combined `cpu_instrs.gb`, `mem_timing.gb` and the 12 `dmg_sound` ROMs (`roms/dmg_sound/`) headless under a cycle budget. A ROM passes when it prints `Passed` over the serial port. The sound ROMs only print on screen; they also leave their result in cartridge RAM, which `rom_test` reads back through the battery save. All of them pass.
 
 `roms/dmg-acid2.gb` reports through the screen, not the serial port, so `test_acid2` checks it instead.
 
@@ -338,7 +349,7 @@ Run the Mooneye test suite (the ROMs that apply to a DMG; it is downloaded once 
 make mooneye
 ```
 
-Mooneye ROMs report through the serial port as six bytes: the Fibonacci numbers `3 5 8 13 21 34` for a pass, or `0x42` six times for a failure; `rom_test` recognises both that and Blargg's text. The ROMs that are known to fail are listed in `tools/mooneye-expected-failures.txt`: `make mooneye` fails only for a ROM that is not on the list and reports listed ROMs that now pass. CI runs it.
+Mooneye ROMs report through the serial port as six bytes: the Fibonacci numbers `3 5 8 13 21 34` for a pass, or `0x42` six times for a failure; `rom_test` recognises both that and Blargg's text. All 94 pass. Any ROM known to fail would be listed in `tools/mooneye-expected-failures.txt`, which is empty now: `make mooneye` fails only for a ROM that is not on the list and reports listed ROMs that now pass. CI runs it.
 
 To run one ROM with a custom budget:
 
@@ -350,15 +361,16 @@ make build/rom_test
 ## Coverage and Limitations
 
 - The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and the window adds no dots to drawing. The LY = 153 early-zero quirk, the STAT write quirk and the OAM bug are not modelled.
-- No audio. A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
+- Audio is DMG only, advances in whole M-cycles, and the core's output is unfiltered (the front end applies the high-pass filter). The zombie-mode envelope quirks and other behaviour that only the CGB shows are not modelled.
+- A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
 - The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
-- Register power-on values are the DMG post-boot CPU registers only. The divider starts at the boot ROM's phase (DIV reads 0xAB at the entry point), most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
-- No Mooneye test ROM harness is included, so timing beyond what `mem_timing` covers is unvalidated.
+- Register power-on values are the DMG post-boot ones for the CPU registers, the divider (DIV reads 0xAB at the entry point), `P1` (0xCF), `IF` (0xE1) and the sound registers; most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
+- Timing beyond what the Blargg and Mooneye ROMs cover is unvalidated.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Close the remaining Mooneye failures (93 of 94 DMG ROMs pass): the I/O power-on values (they include the audio registers, so they wait for audio), the HALT bug, and the window's effect on mode 3 length.
-2. Audio.
+1. Accuracy the ROMs do not yet check: the HALT bug, the window's effect on mode 3 length, mid-line PPU register changes and the OAM bug.
+2. Colour: the CGB.

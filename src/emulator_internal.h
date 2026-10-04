@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include <apu.h>
 #include <bus.h>
 #include <cartridge.h>
 #include <cpu.h>
@@ -25,10 +26,14 @@ struct Emulator {
     Ppu ppu;
     Dma dma;
     Joypad joypad;
+    Apu apu;
     Bus bus;
     CPU cpu;
 
     uint64_t cycles;
+
+    /* Kept across a reset: the front end sets it once. */
+    unsigned audio_sample_rate;
 
     /* Why the last emulator_load_rom() failed, if it was the cartridge type. */
     bool unsupported_cartridge;

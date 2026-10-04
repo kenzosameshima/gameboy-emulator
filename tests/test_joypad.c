@@ -41,8 +41,9 @@ static void test_reset_and_masks(void)
 {
     setup();
 
-    /* Nothing selected, nothing pressed: all lines high. */
-    assert(joypad_read(&joypad) == 0xFF);
+    /* The boot ROM leaves both groups selected; nothing pressed, so all lines
+     * read high. */
+    assert(joypad_read(&joypad) == 0xCF);
 
     /* Only bits 4 and 5 can be written; bits 6 and 7 always read 1. */
     joypad_write(&joypad, 0x00);

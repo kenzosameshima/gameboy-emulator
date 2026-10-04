@@ -16,6 +16,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
 
     timer_step(&emulator->timer, cycles);
     serial_step(&emulator->serial, cycles, emulator->timer.divider);
+    apu_step(&emulator->apu, cycles, emulator->timer.divider);
     dma_step(&emulator->dma, cycles);
     ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);
@@ -30,11 +31,17 @@ static void emulator_reset(Emulator *emulator)
 {
     memory_init(&emulator->memory);
     interrupts_init(&emulator->interrupts);
+
+    /* The boot ROM leaves with the first VBlank still pending. */
+    interrupts_request(&emulator->interrupts, INTERRUPT_VBLANK);
+
     timer_init(&emulator->timer, &emulator->interrupts);
     timer_power_on(&emulator->timer);
     ppu_init(&emulator->ppu, &emulator->interrupts);
     dma_init(&emulator->dma, &emulator->bus, &emulator->ppu);
     joypad_init(&emulator->joypad, &emulator->interrupts);
+    apu_init(&emulator->apu);
+    apu_set_sample_rate(&emulator->apu, emulator->audio_sample_rate);
     serial_reset(&emulator->serial);
     cpu_init(&emulator->cpu, &emulator->bus, &emulator->interrupts);
     cpu_set_tick_handler(&emulator->cpu, emulator_tick, emulator);
@@ -63,6 +70,7 @@ Emulator *emulator_create(void)
     atomic_init(&emulator->stop_requested, false);
     emulator->unsupported_cartridge = false;
     emulator->unsupported_cartridge_type = 0;
+    emulator->audio_sample_rate = 0;
     cartridge_init(&emulator->cartridge);
     interrupts_init(&emulator->interrupts);
     serial_init(&emulator->serial, &emulator->interrupts);
@@ -78,6 +86,7 @@ Emulator *emulator_create(void)
     bus_attach_ppu(&emulator->bus, &emulator->ppu);
     bus_attach_dma(&emulator->bus, &emulator->dma);
     bus_attach_joypad(&emulator->bus, &emulator->joypad);
+    bus_attach_apu(&emulator->bus, &emulator->apu);
 
     emulator_reset(emulator);
 
@@ -248,6 +257,31 @@ const uint8_t *emulator_framebuffer(const Emulator *emulator)
 uint64_t emulator_frame_count(const Emulator *emulator)
 {
     return emulator == NULL ? 0 : emulator->ppu.frames;
+}
+
+
+void emulator_set_audio_sample_rate(Emulator *emulator, unsigned rate)
+{
+    if (emulator == NULL) {
+        return;
+    }
+
+    emulator->audio_sample_rate = rate;
+    apu_set_sample_rate(&emulator->apu, rate);
+}
+
+
+size_t emulator_take_audio(
+    Emulator *emulator,
+    int16_t *out,
+    size_t max_frames
+)
+{
+    if (emulator == NULL || out == NULL) {
+        return 0;
+    }
+
+    return apu_take_samples(&emulator->apu, out, max_frames);
 }
 
 
