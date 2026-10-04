@@ -18,9 +18,20 @@ enum {
     CARTRIDGE_HEADER_RAM_SIZE = 0x0149
 };
 
+/* MBC1 registers. Private to the MBC1 mapper (src/mapper_mbc1.c). */
+typedef struct Mbc1State {
+    bool ram_enabled;
+    uint8_t bank_low;     /* 5 bits, written 0 is stored as 1 */
+    uint8_t bank_high;    /* 2 bits */
+    bool banking_mode;    /* false: simple, true: advanced */
+} Mbc1State;
+
 /*
  * A Cartridge initialized with cartridge_init() and given a ROM buffer
  * behaves as a ROM-only cartridge, mapped directly at 0000-7FFF.
+ *
+ * The mapper decides how addresses map into the ROM and RAM buffers; see
+ * src/mapper.h. `state` holds that mapper's registers and is private to it.
  */
 typedef struct Cartridge {
     uint8_t *rom;
@@ -33,11 +44,9 @@ typedef struct Cartridge {
     uint8_t *ram;
     size_t ram_size;
 
-    /* MBC1 registers. */
-    bool ram_enabled;
-    uint8_t bank_low;     /* 5 bits, written 0 is stored as 1 */
-    uint8_t bank_high;    /* 2 bits */
-    bool banking_mode;    /* false: simple, true: advanced */
+    union {
+        Mbc1State mbc1;
+    } state;
 } Cartridge;
 
 void cartridge_init(Cartridge *cartridge);
