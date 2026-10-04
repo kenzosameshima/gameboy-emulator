@@ -27,4 +27,10 @@ struct Emulator {
     atomic_bool running;
 };
 
+/* emulator_stop() is documented as async-signal-safe, which needs this. */
+static_assert(
+    ATOMIC_BOOL_LOCK_FREE == 2,
+    "atomic_bool must be lock-free for emulator_stop()"
+);
+
 #endif
