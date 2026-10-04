@@ -320,6 +320,14 @@ Runs Blargg's 11 individual `cpu_instrs` ROMs, the combined `cpu_instrs.gb`, and
 
 `roms/dmg-acid2.gb` reports through the screen, not the serial port, so `test_acid2` checks it instead.
 
+Run the Mooneye test suite (the ROMs that apply to a DMG; it is downloaded once into the ignored `roms/mooneye/`, from a fixed release checked against a SHA-256):
+
+```sh
+make mooneye
+```
+
+Mooneye ROMs report through the serial port as six bytes: the Fibonacci numbers `3 5 8 13 21 34` for a pass, or `0x42` six times for a failure; `rom_test` recognises both that and Blargg's text. The ROMs that are known to fail are listed in `tools/mooneye-expected-failures.txt`: `make mooneye` fails only for a ROM that is not on the list and reports listed ROMs that now pass. CI runs it.
+
 To run one ROM with a custom budget:
 
 ```sh

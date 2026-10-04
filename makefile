@@ -98,7 +98,7 @@ ALL_OBJ = $(CORE_OBJ) \
 ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb
 
 
-.PHONY: all clean test rom-test check sdl
+.PHONY: all clean test rom-test check sdl mooneye
 
 # Keep object files between runs so unchanged tests are not rebuilt.
 .SECONDARY:
@@ -172,6 +172,13 @@ rom-test: $(ROM_TEST)
 
 # Everything: the unit tests and the Blargg test ROMs.
 check: test rom-test
+
+
+# The Mooneye test suite, DMG ROMs only. Downloads it into roms/mooneye on
+# first use; see tools/mooneye.sh. Not part of check because it needs the
+# network and not every ROM passes yet.
+mooneye: $(ROM_TEST)
+	tools/mooneye.sh $(ROM_TEST)
 
 
 -include $(ALL_OBJ:.o=.d)

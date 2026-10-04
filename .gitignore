@@ -8,3 +8,6 @@
 # Commercial ROMs stay local. The Blargg/dmg-acid2 test ROMs are already
 # tracked; add new ones with `git add -f`.
 /roms/*.gb
+
+# Downloaded Mooneye test suite.
+/roms/mooneye/
