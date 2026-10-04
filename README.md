@@ -1,8 +1,8 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer and a Serial port, and it passes Blargg's CPU instruction and memory timing test ROMs.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1 and MBC3 mappers, interrupts, a Timer, a Serial port and a PPU, and it passes Blargg's CPU instruction and memory timing test ROMs and the dmg-acid2 picture test.
 
-The core is headless: there is no PPU, joypad, DMA or audio yet, so games cannot be played. Test ROMs run because they report their results through the serial port.
+The core is headless: the PPU draws into a framebuffer that a front end can read, but there is no joypad, OAM DMA or audio yet, so games cannot be played. Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG.
 
 ## Current Architecture
 
@@ -22,6 +22,7 @@ main.c            tools/rom_test.c
               +-- InterruptRegisters (interrupts.c)
               +-- Timer
               +-- Serial
+              +-- Ppu (ppu.c, ppu_render.c)
 ```
 
 `main.c` and `tools/rom_test.c` only use the opaque `Emulator` API. `Emulator` owns the machine components by value. The Bus routes accesses to Cartridge, Memory, Timer, Serial, and the interrupt registers; the CPU uses the Bus for memory and takes the interrupt registers as its own dependency (`cpu_init(cpu, bus, interrupts)`), so it never reaches through the Bus.
@@ -113,15 +114,29 @@ The Timer models the DMG normal-speed path. CGB double-speed behavior is not imp
 
 Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started with the internal clock (`SC = 0x81`) reports its byte to the output callback, completes after 4096 T-cycles with `SB = 0xFF`, clears `SC` bit 7, and requests the serial interrupt. Writing `SC = 0x81` again restarts the transfer. The external clock never completes.
 
+### PPU
+
+The picture processing unit (`ppu.c`, `ppu_render.c`) owns VRAM, OAM, the LCD registers and the framebuffer.
+
+- Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing (172), HBlank, then VBlank on lines 144-153. `emulator_frame_count()` counts frames at VBlank entry.
+- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking).
+- VRAM is unreadable while drawing and OAM while scanning or drawing (reads give `0xFF`, writes are dropped), and both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0.
+- Scanline renderer: background with SCX/SCY wrap, both tile data addressing modes and both tile maps, window with its own line counter and WX < 7 handling, 8x8 and 8x16 sprites with flips, both palettes and the behind-background flag, DMG sprite priority (lower X first, then OAM order) and the ten-sprites-per-line limit. Shades 0 (lightest) to 3 (darkest) are available through `emulator_framebuffer()`.
+- `OAM DMA` writes use `ppu_oam_dma_write()`, which ignores the access lock like the hardware does.
+
 ## Memory Map Currently Used
 
 ```text
 0000-7FFF   Cartridge ROM (writes program the mapper)
 A000-BFFF   Cartridge RAM
 C000-DFFF   Work RAM
+8000-9FFF   Video RAM
 E000-FDFF   Echo of C000-DDFF
+FE00-FE9F   OAM (sprite attributes)
 FF01-FF02   Serial
 FF04-FF07   Timer registers
+FF40-FF45   LCD registers (LCDC, STAT, SCY, SCX, LY, LYC)
+FF47-FF4B   LCD palettes and window (BGP, OBP0, OBP1, WY, WX)
 FF0F        Interrupt Flag (IF)
 FF80-FFFE   High RAM
 FFFF        Interrupt Enable (IE)
@@ -151,7 +166,10 @@ src/mapper_mbc1.c       MBC1 mapper
 src/mapper_mbc3.c       MBC3 mapper and real-time clock
 src/timer.c             Timer implementation
 src/serial.c            Serial port
+src/ppu.c               PPU state machine, registers, interrupts, VRAM/OAM access
+src/ppu_render.c        PPU scanline renderer
 tools/rom_test.c        Headless test ROM runner
+tools/frame_dump.c      Runs a ROM and saves the LCD picture as a PNG
 tests/                  Unit and integration tests
 roms/                   Local test ROMs
 opcodes.json            Opcode reference data, used by test_opcode_timing
@@ -207,6 +225,13 @@ Without a limit the emulator runs until it is interrupted or the CPU stalls. Use
 ./gameboy roms/cpu_instrs.gb -c 250000000
 ```
 
+Save the screen after a number of frames as a PNG (default 60 frames, 3x scale), for a ROM that draws something:
+
+```sh
+make build/frame_dump
+./build/frame_dump roms/dmg-acid2.gb acid2.png 30
+```
+
 ## Tests
 
 Run the unit and integration tests:
@@ -232,6 +257,9 @@ The test suite includes:
 - `test_serial`: register masks, transfer timing, restart, and the callback.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
+- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off.
+- `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
+- `test_acid2`: runs `roms/dmg-acid2.gb` and compares the picture with the reference screenshot pixel by pixel (`tests/data/dmg-acid2-reference.txt`, from the dmg-acid2 repository, MIT licence).
 - `test_memory_bus`: Memory and Bus boundaries, echo RAM.
 - `test_emulator`, `test_emulator_run`: cycle budgets, stall detection, fault reporting, and serial output through the whole machine.
 
@@ -243,7 +271,7 @@ make rom-test
 
 Runs Blargg's 11 individual `cpu_instrs` ROMs, the combined `cpu_instrs.gb`, and `mem_timing.gb` headless under a cycle budget. A ROM passes when it prints `Passed` over the serial port. All of them pass.
 
-`roms/dmg-acid2.gb` needs a PPU and is not part of this run.
+`roms/dmg-acid2.gb` reports through the screen, not the serial port, so `test_acid2` checks it instead.
 
 To run one ROM with a custom budget:
 
@@ -254,7 +282,7 @@ make build/rom_test
 
 ## Coverage and Limitations
 
-- No PPU, so no video output and no VBlank or LCD STAT interrupts. `dmg-acid2` runs but shows nothing.
+- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and drawing always lasts 172 dots (no sprite or scroll penalties). The LY = 153 early-zero quirk, the STAT write quirk, the OAM bug and the extra mode 2 interrupt at line 144 are not modelled.
 - No joypad, OAM DMA, or audio.
 - Only ROM-only, MBC1 and MBC3 cartridges. MBC2, MBC5 and others are rejected at load time.
 - Cartridge RAM is not saved to disk.
@@ -268,6 +296,5 @@ Passing the tests above does not imply complete Game Boy hardware compatibility.
 ## Development Direction
 
 1. Validate against Mooneye acceptance ROMs. They signal a pass with `LD B,B` and the Fibonacci values in the registers, so the runner needs to detect that instead of serial text. Along the way: power-on DIV, `IF`/`TAC` upper bits, and the HALT bug.
-2. PPU: keep the core headless, expose a framebuffer and a button-state setter through `emulator.h`, and put any SDL front end outside the core. Start with LCD registers and mode timing (456 dots per line, 154 lines), raise VBlank and STAT through `interrupts_request()`, and render per scanline. `dmg-acid2.gb` is the target.
-3. Joypad register and OAM DMA alongside the PPU.
-4. Audio last.
+2. Joypad register and OAM DMA, so games can be played and sprites work in games that use DMA. A front end (for example SDL) belongs outside the core: it reads `emulator_framebuffer()` and would set the button state.
+3. Audio last.

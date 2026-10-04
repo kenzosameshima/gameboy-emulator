@@ -10,6 +10,7 @@
 #include <emulator.h>
 #include <interrupts.h>
 #include <memory.h>
+#include <ppu.h>
 #include <serial.h>
 #include <timer.h>
 
@@ -19,6 +20,7 @@ struct Emulator {
     InterruptRegisters interrupts;
     Timer timer;
     Serial serial;
+    Ppu ppu;
     Bus bus;
     CPU cpu;
 

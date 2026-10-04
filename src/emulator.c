@@ -16,6 +16,7 @@ static void emulator_tick(void *context, CpuCycles cycles)
 
     timer_step(&emulator->timer, cycles);
     serial_step(&emulator->serial, cycles);
+    ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);
 }
 
@@ -29,6 +30,7 @@ static void emulator_reset(Emulator *emulator)
     memory_init(&emulator->memory);
     interrupts_init(&emulator->interrupts);
     timer_init(&emulator->timer, &emulator->interrupts);
+    ppu_init(&emulator->ppu, &emulator->interrupts);
     serial_reset(&emulator->serial);
     cpu_init(&emulator->cpu, &emulator->bus, &emulator->interrupts);
     cpu_set_tick_handler(&emulator->cpu, emulator_tick, emulator);
@@ -69,6 +71,7 @@ Emulator *emulator_create(void)
     );
     bus_attach_timer(&emulator->bus, &emulator->timer);
     bus_attach_serial(&emulator->bus, &emulator->serial);
+    bus_attach_ppu(&emulator->bus, &emulator->ppu);
 
     emulator_reset(emulator);
 
@@ -217,6 +220,18 @@ uint64_t emulator_cycles(const Emulator *emulator)
     }
 
     return emulator->cycles;
+}
+
+
+const uint8_t *emulator_framebuffer(const Emulator *emulator)
+{
+    return emulator == NULL ? NULL : emulator->ppu.framebuffer;
+}
+
+
+uint64_t emulator_frame_count(const Emulator *emulator)
+{
+    return emulator == NULL ? 0 : emulator->ppu.frames;
 }
 
 

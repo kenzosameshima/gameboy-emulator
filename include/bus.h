@@ -9,6 +9,7 @@ typedef struct Cartridge Cartridge;
 typedef struct Memory Memory;
 typedef struct Timer Timer;
 typedef struct Serial Serial;
+typedef struct Ppu Ppu;
 
 typedef struct Bus {
     Cartridge *cartridge;
@@ -16,6 +17,7 @@ typedef struct Bus {
     InterruptRegisters *interrupts;
     Timer *timer;
     Serial *serial;
+    Ppu *ppu;
 } Bus;
 
 /*
@@ -26,13 +28,14 @@ typedef struct Bus {
  * E000-FDFF echo RAM
  * FF01-FF02 serial registers
  * FF04-FF07 timer registers
+ * 8000-9FFF video RAM, FE00-FE9F OAM and FF40-FF45, FF47-FF4B LCD registers
  * FF0F       interrupt flag (IF)
  * FF80-FFFE high RAM
  * FFFF       interrupt enable (IE)
  * All other addresses currently return 0xFF or ignore writes.
  *
- * The timer and serial are optional: without them their registers read
- * 0xFF and ignore writes.
+ * The timer, serial port and PPU are optional: without them their addresses
+ * read 0xFF and ignore writes.
  */
 
 void bus_init(
@@ -44,6 +47,7 @@ void bus_init(
 
 void bus_attach_timer(Bus *bus, Timer *timer);
 void bus_attach_serial(Bus *bus, Serial *serial);
+void bus_attach_ppu(Bus *bus, Ppu *ppu);
 
 uint8_t bus_read(Bus *bus, uint16_t address);
 void bus_write(Bus *bus, uint16_t address, uint8_t value);

@@ -5,6 +5,7 @@
 #include <cartridge.h>
 #include <memory.h>
 #include <memory_map.h>
+#include <ppu.h>
 #include <serial.h>
 #include <timer.h>
 
@@ -18,6 +19,14 @@ static bool bus_is_serial_address(uint16_t address)
 {
     return address == SERIAL_SB_ADDRESS ||
            address == SERIAL_SC_ADDRESS;
+}
+
+static bool bus_is_ppu_address(uint16_t address)
+{
+    return (address >= PPU_VRAM_START && address <= PPU_VRAM_END) ||
+           (address >= PPU_OAM_START && address <= PPU_OAM_END) ||
+           (address >= PPU_LCDC_ADDRESS && address <= PPU_LYC_ADDRESS) ||
+           (address >= PPU_BGP_ADDRESS && address <= PPU_WX_ADDRESS);
 }
 
 static bool bus_is_cartridge_ram_address(uint16_t address)
@@ -53,6 +62,7 @@ void bus_init(
     bus->interrupts = interrupts;
     bus->timer = NULL;
     bus->serial = NULL;
+    bus->ppu = NULL;
 }
 
 void bus_attach_timer(Bus *bus, Timer *timer)
@@ -63,6 +73,11 @@ void bus_attach_timer(Bus *bus, Timer *timer)
 void bus_attach_serial(Bus *bus, Serial *serial)
 {
     bus->serial = serial;
+}
+
+void bus_attach_ppu(Bus *bus, Ppu *ppu)
+{
+    bus->ppu = ppu;
 }
 
 uint8_t bus_read(Bus *bus, uint16_t address)
@@ -84,6 +99,10 @@ uint8_t bus_read(Bus *bus, uint16_t address)
             bus->memory,
             (uint16_t)(address - MEM_ECHO_OFFSET)
         );
+    }
+
+    if (bus_is_ppu_address(address)) {
+        return bus->ppu == NULL ? 0xFF : ppu_read(bus->ppu, address);
     }
 
     if (bus_is_serial_address(address)) {
@@ -131,6 +150,13 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
             (uint16_t)(address - MEM_ECHO_OFFSET),
             value
         );
+        return;
+    }
+
+    if (bus_is_ppu_address(address)) {
+        if (bus->ppu != NULL) {
+            ppu_write(bus->ppu, address, value);
+        }
         return;
     }
 
