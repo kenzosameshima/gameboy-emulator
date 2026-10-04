@@ -28,6 +28,9 @@ void interrupts_init(InterruptRegisters *interrupts);
 /* Hardware components raise interrupts through this call. */
 void interrupts_request(InterruptRegisters *interrupts, uint8_t mask);
 
+/* Clears the request bits in `mask`, as servicing an interrupt does. */
+void interrupts_acknowledge(InterruptRegisters *interrupts, uint8_t mask);
+
 /* Requested and enabled interrupts: IF & IE & INTERRUPT_VALID_MASK. */
 uint8_t interrupts_pending(const InterruptRegisters *interrupts);
 
