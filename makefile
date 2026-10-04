@@ -26,7 +26,11 @@ CFLAGS = -std=$(STD) \
 	     -Wwrite-strings \
 	     -Wstrict-prototypes \
 	     -Wmissing-prototypes \
+	     $(OPT) \
 	     -g
+
+# Optimised by default so the test ROMs run quickly; override with OPT=-O0.
+OPT ?= -O2
 
 LDFLAGS =
 
@@ -76,7 +80,7 @@ ALL_OBJ = $(CORE_OBJ) \
 ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb
 
 
-.PHONY: all clean test rom-test
+.PHONY: all clean test rom-test check
 
 # Keep object files between runs so unchanged tests are not rebuilt.
 .SECONDARY:
@@ -107,6 +111,11 @@ $(BUILD)/%.o: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
 
+# Tests rely on assert(), so they are always built with assertions on, even
+# if NDEBUG sneaks in through CFLAGS.
+$(BUILD)/tests/%.o: CFLAGS += -UNDEBUG
+
+
 test: $(TEST_BIN)
 	@for test in $(TEST_BIN); do \
 		echo "== $$test"; \
@@ -121,6 +130,10 @@ rom-test: $(ROM_TEST)
 		$(ROM_TEST) "$$rom" || status=1; \
 	done; \
 	exit $$status
+
+
+# Everything: the unit tests and the Blargg test ROMs.
+check: test rom-test
 
 
 -include $(ALL_OBJ:.o=.d)
