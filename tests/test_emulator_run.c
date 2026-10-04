@@ -273,18 +273,77 @@ static void test_serial_interrupt_end_to_end(void)
     emulator_destroy(emulator);
 }
 
+static void test_rom_load_failures(void)
+{
+    Program program = {0};
+    const uint8_t nop = 0x00;
+    uint8_t type = 0;
+
+    place(&program, 0x0100, &nop, sizeof(nop));
+
+    Emulator *emulator = load(&program);
+
+    assert(!emulator_get_unsupported_cartridge_type(emulator, &type));
+
+    /* 0x13 is MBC3+RAM+BATTERY, which is not implemented. */
+    program.rom[CARTRIDGE_HEADER_TYPE] = 0x13;
+    test_write_file(rom_path, program.rom, ROM_SIZE);
+
+    assert(emulator_load_rom(emulator, rom_path) ==
+           EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE);
+    assert(emulator_get_unsupported_cartridge_type(emulator, &type));
+    assert(type == 0x13);
+    assert(!emulator_get_unsupported_cartridge_type(emulator, NULL));
+
+    /* The previously loaded ROM keeps running. */
+    assert(emulator_step(emulator) == EMULATOR_OK);
+
+    /* A file that cannot be read is a different failure and clears it. */
+    assert(emulator_load_rom(emulator, "roms/does-not-exist.gb") ==
+           EMULATOR_ERROR_ROM_LOAD_FAILED);
+    assert(!emulator_get_unsupported_cartridge_type(emulator, &type));
+
+    const uint8_t no_bytes[1] = {0};
+
+    test_write_file(rom_path, no_bytes, 0);
+    assert(emulator_load_rom(emulator, rom_path) ==
+           EMULATOR_ERROR_ROM_LOAD_FAILED);
+
+    /* A successful load clears the unsupported type too. */
+    program.rom[CARTRIDGE_HEADER_TYPE] = 0x13;
+    test_write_file(rom_path, program.rom, ROM_SIZE);
+    assert(emulator_load_rom(emulator, rom_path) ==
+           EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE);
+
+    program.rom[CARTRIDGE_HEADER_TYPE] = 0x00;
+    test_write_file(rom_path, program.rom, ROM_SIZE);
+    assert(emulator_load_rom(emulator, rom_path) == EMULATOR_OK);
+    assert(!emulator_get_unsupported_cartridge_type(emulator, &type));
+
+    emulator_destroy(emulator);
+}
+
 static void test_status_strings(void)
 {
     assert(strcmp(emulator_status_string(EMULATOR_OK), "ok") == 0);
     assert(emulator_status_string(EMULATOR_STALLED) != NULL);
     assert(emulator_status_string(EMULATOR_ERROR_ILLEGAL_OPCODE) != NULL);
     assert(emulator_status_string((EmulatorStatus)99) != NULL);
+
+    /* Every defined status has its own text, not the fallback. */
+    const char *unknown = emulator_status_string((EmulatorStatus)99);
+
+    for (int status = EMULATOR_OK; status <= EMULATOR_STALLED; status++) {
+        assert(strcmp(emulator_status_string((EmulatorStatus)status),
+                      unknown) != 0);
+    }
 }
 
 int main(void)
 {
     test_cycle_budget();
     test_run_with_invalid_state();
+    test_rom_load_failures();
     test_halt_without_wakeup_stalls();
     test_halt_with_wakeup_source_runs_on();
     test_illegal_opcode_fault();

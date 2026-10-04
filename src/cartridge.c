@@ -146,28 +146,32 @@ void cartridge_init(Cartridge *cartridge)
     cartridge->banking_mode = false;
 }
 
-int cartridge_load(Cartridge *cartridge, const char *path)
+CartridgeLoadStatus cartridge_load(
+    Cartridge *cartridge,
+    const char *path,
+    uint8_t *unsupported_type
+)
 {
     if (cartridge == NULL || path == NULL) {
-        return 0;
+        return CARTRIDGE_LOAD_INVALID_ARGUMENT;
     }
 
     FILE *file = fopen(path, "rb");
 
     if (file == NULL) {
-        return 0;
+        return CARTRIDGE_LOAD_IO_ERROR;
     }
 
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
-        return 0;
+        return CARTRIDGE_LOAD_IO_ERROR;
     }
 
     long size = ftell(file);
 
     if (size <= 0) {
         fclose(file);
-        return 0;
+        return CARTRIDGE_LOAD_IO_ERROR;
     }
 
     rewind(file);
@@ -178,7 +182,7 @@ int cartridge_load(Cartridge *cartridge, const char *path)
 
     if (rom == NULL) {
         fclose(file);
-        return 0;
+        return CARTRIDGE_LOAD_OUT_OF_MEMORY;
     }
 
     size_t read = fread(
@@ -193,16 +197,21 @@ int cartridge_load(Cartridge *cartridge, const char *path)
     if (read != rom_size) {
         free(rom);
 
-        return 0;
+        return CARTRIDGE_LOAD_IO_ERROR;
     }
 
     CartridgeMapper mapper;
     size_t ram_size;
 
     if (!cartridge_configure(rom, rom_size, &mapper, &ram_size)) {
+        /* Only a ROM with a complete header can be unsupported. */
+        if (unsupported_type != NULL) {
+            *unsupported_type = rom[CARTRIDGE_HEADER_TYPE];
+        }
+
         free(rom);
 
-        return 0;
+        return CARTRIDGE_LOAD_UNSUPPORTED_TYPE;
     }
 
     uint8_t *ram = NULL;
@@ -213,7 +222,7 @@ int cartridge_load(Cartridge *cartridge, const char *path)
         if (ram == NULL) {
             free(rom);
 
-            return 0;
+            return CARTRIDGE_LOAD_OUT_OF_MEMORY;
         }
     }
 
@@ -226,7 +235,7 @@ int cartridge_load(Cartridge *cartridge, const char *path)
     cartridge->ram = ram;
     cartridge->ram_size = ram_size;
 
-    return 1;
+    return CARTRIDGE_LOAD_OK;
 }
 
 void cartridge_destroy(Cartridge *cartridge)

@@ -17,8 +17,9 @@ int main(void)
     assert(
         cartridge_load(
             &cartridge,
-            "roms/01-special.gb"
-        )
+            "roms/01-special.gb",
+            NULL
+        ) == CARTRIDGE_LOAD_OK
     );
 
     printf(
@@ -44,8 +45,9 @@ int main(void)
     assert(
         cartridge_load(
             &cartridge,
-            "roms/02-interrupts.gb"
-        )
+            "roms/02-interrupts.gb",
+            NULL
+        ) == CARTRIDGE_LOAD_OK
     );
 
     assert(cartridge.rom != first_rom);
@@ -55,10 +57,19 @@ int main(void)
     size_t second_size = cartridge.rom_size;
 
     assert(
-        !cartridge_load(
+        cartridge_load(
             &cartridge,
-            "roms/does-not-exist.gb"
-        )
+            "roms/does-not-exist.gb",
+            NULL
+        ) == CARTRIDGE_LOAD_IO_ERROR
+    );
+    assert(
+        cartridge_load(NULL, "roms/01-special.gb", NULL) ==
+        CARTRIDGE_LOAD_INVALID_ARGUMENT
+    );
+    assert(
+        cartridge_load(&cartridge, NULL, NULL) ==
+        CARTRIDGE_LOAD_INVALID_ARGUMENT
     );
 
     assert(cartridge.rom == second_rom);

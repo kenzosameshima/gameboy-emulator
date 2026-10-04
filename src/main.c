@@ -57,12 +57,23 @@ int main(int argc, char **argv)
     EmulatorStatus status = emulator_load_rom(emulator, argv[1]);
 
     if (status != EMULATOR_OK) {
+        uint8_t cartridge_type;
+
         fprintf(
             stderr,
-            "Failed to load ROM %s: %s\n",
+            "Failed to load ROM %s: %s",
             argv[1],
             emulator_status_string(status)
         );
+
+        if (emulator_get_unsupported_cartridge_type(
+            emulator,
+            &cartridge_type
+        )) {
+            fprintf(stderr, ", header type 0x%02X", (unsigned)cartridge_type);
+        }
+
+        fputc('\n', stderr);
 
         emulator_destroy(emulator);
         return 1;

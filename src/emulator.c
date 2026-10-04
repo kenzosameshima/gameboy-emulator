@@ -52,6 +52,8 @@ Emulator *emulator_create(void)
      * only keeps references to them.
      */
     atomic_init(&emulator->running, false);
+    emulator->unsupported_cartridge = false;
+    emulator->unsupported_cartridge_type = 0;
     cartridge_init(&emulator->cartridge);
     interrupts_init(&emulator->interrupts);
     serial_init(&emulator->serial, &emulator->interrupts);
@@ -80,11 +82,28 @@ EmulatorStatus emulator_load_rom(
         return EMULATOR_ERROR_INVALID_ARGUMENT;
     }
 
-    if (!cartridge_load(
+    emulator->unsupported_cartridge = false;
+
+    switch (cartridge_load(
         &emulator->cartridge,
-        path
+        path,
+        &emulator->unsupported_cartridge_type
     )) {
-        return EMULATOR_ERROR_ROM_LOAD_FAILED;
+        case CARTRIDGE_LOAD_OK:
+            break;
+
+        case CARTRIDGE_LOAD_INVALID_ARGUMENT:
+            return EMULATOR_ERROR_INVALID_ARGUMENT;
+
+        case CARTRIDGE_LOAD_OUT_OF_MEMORY:
+            return EMULATOR_ERROR_OUT_OF_MEMORY;
+
+        case CARTRIDGE_LOAD_UNSUPPORTED_TYPE:
+            emulator->unsupported_cartridge = true;
+            return EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE;
+
+        case CARTRIDGE_LOAD_IO_ERROR:
+            return EMULATOR_ERROR_ROM_LOAD_FAILED;
     }
 
     /* Loading a ROM starts a new machine execution state. */
@@ -221,6 +240,21 @@ bool emulator_get_fault(const Emulator *emulator, EmulatorFault *fault)
 }
 
 
+bool emulator_get_unsupported_cartridge_type(
+    const Emulator *emulator,
+    uint8_t *type
+)
+{
+    if (emulator == NULL || type == NULL || !emulator->unsupported_cartridge) {
+        return false;
+    }
+
+    *type = emulator->unsupported_cartridge_type;
+
+    return true;
+}
+
+
 const char *emulator_status_string(EmulatorStatus status)
 {
     switch (status) {
@@ -234,7 +268,13 @@ const char *emulator_status_string(EmulatorStatus status)
             return "no ROM loaded";
 
         case EMULATOR_ERROR_ROM_LOAD_FAILED:
-            return "ROM could not be read or has an unsupported cartridge type";
+            return "ROM file could not be read or is empty";
+
+        case EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE:
+            return "unsupported cartridge type (only ROM-only and MBC1)";
+
+        case EMULATOR_ERROR_OUT_OF_MEMORY:
+            return "out of memory";
 
         case EMULATOR_ERROR_ILLEGAL_OPCODE:
             return "undefined opcode";

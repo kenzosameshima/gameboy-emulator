@@ -42,16 +42,32 @@ typedef struct Cartridge {
 
 void cartridge_init(Cartridge *cartridge);
 
+/* Result of cartridge_load(). CARTRIDGE_LOAD_OK is zero. */
+typedef enum {
+    CARTRIDGE_LOAD_OK = 0,
+    CARTRIDGE_LOAD_INVALID_ARGUMENT,
+    /* The file cannot be opened or read, or it is empty. */
+    CARTRIDGE_LOAD_IO_ERROR,
+    CARTRIDGE_LOAD_OUT_OF_MEMORY,
+    /* The header names a cartridge type that is not implemented. */
+    CARTRIDGE_LOAD_UNSUPPORTED_TYPE
+} CartridgeLoadStatus;
+
 /*
  * Loads a ROM file and configures the mapper from the header.
  * Supported cartridge types: 00 (ROM only) and 01-03 (MBC1, +RAM,
  * +BATTERY; battery contents are not persisted). Files too small to
  * contain a header are loaded as ROM only.
  *
- * Returns 1 on success and 0 on failure (unreadable file or unsupported
- * cartridge type). A failed load leaves the cartridge unchanged.
+ * A failed load leaves the cartridge unchanged. For
+ * CARTRIDGE_LOAD_UNSUPPORTED_TYPE, `unsupported_type` (which may be NULL)
+ * receives the cartridge type byte from the header (0x0147).
  */
-int cartridge_load(Cartridge *cartridge, const char *path);
+CartridgeLoadStatus cartridge_load(
+    Cartridge *cartridge,
+    const char *path,
+    uint8_t *unsupported_type
+);
 void cartridge_destroy(Cartridge *cartridge);
 
 /* 0000-7FFF, through the mapper. */

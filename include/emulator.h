@@ -16,7 +16,12 @@ typedef enum {
     EMULATOR_OK = 0,
     EMULATOR_ERROR_INVALID_ARGUMENT,
     EMULATOR_ERROR_NO_ROM,
+    /* The ROM file could not be opened or read, or it is empty. */
     EMULATOR_ERROR_ROM_LOAD_FAILED,
+    /* The ROM's cartridge type is not implemented; see
+     * emulator_get_unsupported_cartridge_type(). */
+    EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE,
+    EMULATOR_ERROR_OUT_OF_MEMORY,
     /* The CPU reached one of the undefined opcodes; see emulator_get_fault(). */
     EMULATOR_ERROR_ILLEGAL_OPCODE,
     /*
@@ -54,7 +59,9 @@ Emulator *emulator_create(void);
  * A failed load leaves the currently loaded ROM unchanged.
  *
  * @return EMULATOR_OK on success, EMULATOR_ERROR_ROM_LOAD_FAILED if the
- *         file cannot be read or uses an unsupported cartridge type.
+ *         file cannot be read, EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE if its
+ *         header names an unimplemented cartridge type, or
+ *         EMULATOR_ERROR_OUT_OF_MEMORY.
  */
 EmulatorStatus emulator_load_rom(
     Emulator *emulator,
@@ -127,6 +134,18 @@ uint64_t emulator_cycles(const Emulator *emulator);
  * @return true and fills `fault` if the last step hit an undefined opcode.
  */
 bool emulator_get_fault(const Emulator *emulator, EmulatorFault *fault);
+
+
+/**
+ * Reports the cartridge type byte (header address 0x0147) that made the
+ * last emulator_load_rom() fail with EMULATOR_ERROR_UNSUPPORTED_CARTRIDGE.
+ *
+ * @return true and fills `type` if the last load failed for that reason.
+ */
+bool emulator_get_unsupported_cartridge_type(
+    const Emulator *emulator,
+    uint8_t *type
+);
 
 
 /** Human-readable text for a status value. */
