@@ -71,6 +71,7 @@ CORE_LIB = $(BUILD)/libgbcore.a
 
 GAMEBOY = gameboy$(EXE)
 ROM_TEST = $(BUILD)/rom_test$(EXE)
+FRAME_DUMP = $(BUILD)/frame_dump$(EXE)
 
 TEST_SRC = $(wildcard tests/test_*.c)
 TEST_BIN = $(TEST_SRC:tests/%.c=$(BUILD)/tests/%$(EXE))
@@ -78,10 +79,12 @@ TEST_BIN = $(TEST_SRC:tests/%.c=$(BUILD)/tests/%$(EXE))
 ALL_OBJ = $(CORE_OBJ) \
 	      $(BUILD)/src/main.o \
 	      $(BUILD)/tools/rom_test.o \
+	      $(BUILD)/tools/frame_dump.o \
 	      $(TEST_SRC:%.c=$(BUILD)/%.o)
 
 # Test ROMs that run headless and report through the serial port.
-# dmg-acid2 needs a PPU and is not listed.
+# dmg-acid2 reports through the screen, not the serial port, and is checked
+# by tests/test_acid2.c instead.
 ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb
 
 
@@ -99,6 +102,10 @@ $(GAMEBOY): $(BUILD)/src/main.o $(CORE_LIB)
 
 
 $(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+
+$(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
