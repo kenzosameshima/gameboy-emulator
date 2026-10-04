@@ -349,8 +349,8 @@ static void test_priority_and_vectors(void)
 }
 
 /*
- * A CPU is stalled when it is waiting in HALT or STOP and nothing in this
- * machine can ever end the wait.
+ * A CPU is stalled when it is waiting in HALT and nothing in this machine
+ * can ever end the wait. STOP is not, because input can end it.
  */
 static void test_cpu_is_stalled(void)
 {
@@ -374,13 +374,10 @@ static void test_cpu_is_stalled(void)
     interrupts.interrupt_enable = 0xE0;
     assert(cpu_is_stalled(&cpu));
 
-    /* STOP ends only on a joypad request, and there is no joypad yet. */
+    /* STOP ends on a button press, which can come at any time. */
     cpu.halted = false;
     cpu.stopped = true;
     interrupts.interrupt_enable = 0;
-    assert(cpu_is_stalled(&cpu));
-
-    interrupts.interrupt_flag = INTERRUPT_JOYPAD;
     assert(!cpu_is_stalled(&cpu));
 
     cleanup_cpu(&cartridge);

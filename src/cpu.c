@@ -209,12 +209,7 @@ bool cpu_is_stalled(const CPU *cpu)
                 INTERRUPT_VALID_MASK) == 0;
     }
 
-    if (cpu->stopped) {
-        /* Only a joypad request ends STOP, and nothing raises one yet. */
-        return (cpu->interrupts->interrupt_flag &
-                INTERRUPT_JOYPAD) == 0;
-    }
-
+    /* STOP ends on a button press, which the front end can make any time. */
     return false;
 }
 

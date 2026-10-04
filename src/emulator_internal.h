@@ -7,8 +7,10 @@
 #include <bus.h>
 #include <cartridge.h>
 #include <cpu.h>
+#include <dma.h>
 #include <emulator.h>
 #include <interrupts.h>
+#include <joypad.h>
 #include <memory.h>
 #include <ppu.h>
 #include <serial.h>
@@ -21,6 +23,8 @@ struct Emulator {
     Timer timer;
     Serial serial;
     Ppu ppu;
+    Dma dma;
+    Joypad joypad;
     Bus bus;
     CPU cpu;
 
