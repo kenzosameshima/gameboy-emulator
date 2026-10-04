@@ -218,7 +218,8 @@ Each `tests/test_*.c` file is built and run automatically. Run a single one with
 The test suite includes:
 
 - `test_opcode_timing`: every one of the 512 opcodes against `opcodes.json` for cycle count and byte length, plus the ordering of bus accesses and ticks within an instruction.
-- `test_cpu_alu`: flags and results for ALU, rotate/shift, CB, stack, and 16-bit arithmetic instructions.
+- `test_cpu_alu`: flags and results for ALU, rotate/shift, CB, stack, and 16-bit arithmetic instructions, using known reference values.
+- `test_cpu_alu_exhaustive`: every 8-bit ALU, INC/DEC, rotate/shift and DAA input (plus ADD HL and SP+e8 samples) against an independent model; DAA is checked against decimal arithmetic on BCD operands.
 - `test_cpu`, `test_cpu_instructions`: register, load, jump, and control behavior.
 - `test_interrupts`, `test_emulator_interrupts`: priority, service, HALT wake-up, EI, DI, RETI, and Timer-to-CPU service.
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
