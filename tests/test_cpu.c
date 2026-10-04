@@ -1,1109 +1,280 @@
+/*
+ * Register and memory wiring of the basic CPU instructions: INC/DEC r8 and
+ * r16, LD r8,r8 and the HALT/illegal-opcode control states. The flag
+ * arithmetic itself is covered exhaustively by test_cpu_alu_exhaustive.
+ *
+ * Every instruction runs through cpu_step() on the shared TestMachine, and
+ * the whole register file is compared afterwards, so an instruction that
+ * touches the wrong register fails.
+ */
+
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 
-#include <bus.h>
-#include <cartridge.h>
-#include <cpu.h>
-#include <memory.h>
+#include "test_util.h"
 
-static InterruptRegisters interrupt_registers;
+enum {
+    PROGRAM_ADDRESS = 0x0100,
+    HL_ADDRESS = 0xC000,
+    HL_INDEX = 6
+};
 
-
-/*
- * Test helpers
- */
-
-static void cartridge_init_test(Cartridge *cartridge)
-{
-    cartridge->rom_size = 0x8000;
-    cartridge->rom = calloc(
-        cartridge->rom_size,
-        sizeof(uint8_t)
-    );
-
-    assert(cartridge->rom != NULL);
-}
-
-static void setup_cpu(
-    CPU *cpu,
-    Bus *bus,
-    Memory *memory,
-    Cartridge *cartridge
-)
-{
-    cartridge_init_test(cartridge);
-    memory_init(memory);
-
-    bus_init(
-        bus,
-        cartridge,
-        memory,
-        &interrupt_registers
-    );
-
-    interrupt_registers.interrupt_flag = 0;
-    interrupt_registers.interrupt_enable = 0;
-
-    cpu_init(cpu, bus);
-}
-
-static void cleanup_cpu(
-    Cartridge *cartridge
-)
-{
-    cartridge_destroy(cartridge);
-}
-
-static void write_program(
-    Cartridge *cartridge,
-    const uint8_t *program,
-    size_t size
-)
-{
-    assert(size <= cartridge->rom_size - 0x0100);
-
-    for (size_t i = 0; i < size; i++) {
-        cartridge->rom[0x0100 + i] = program[i];
-    }
-}
-
-
-/*
- * Generic r8 test helpers
- *
- * Encoding:
- *
- * 000 = B
- * 001 = C
- * 010 = D
- * 011 = E
- * 100 = H
- * 101 = L
- * 110 = [HL]
- * 111 = A
- */
-
-static uint8_t test_value_for_register(uint8_t index)
+/* r8 operand encoding: 0=B 1=C 2=D 3=E 4=H 5=L 6=[HL] 7=A. */
+static uint8_t *r8_register(Registers *registers, unsigned index)
 {
     switch (index) {
-        case 0:
-            return 0x10; /* B */
-
-        case 1:
-            return 0x21; /* C */
-
-        case 2:
-            return 0x32; /* D */
-
-        case 3:
-            return 0x43; /* E */
-
-        case 4:
-            return 0x54; /* H */
-
-        case 5:
-            return 0x65; /* L */
-
-        case 7:
-            return 0x87; /* A */
-
+        case 0: return &registers->b;
+        case 1: return &registers->c;
+        case 2: return &registers->d;
+        case 3: return &registers->e;
+        case 4: return &registers->h;
+        case 5: return &registers->l;
+        case 7: return &registers->a;
         default:
-            return 0x00;
+            assert(false && "[HL] is memory, not a register");
+            return NULL;
     }
 }
 
-static uint8_t test_read_register(
-    const CPU *cpu,
-    uint8_t index
-)
+static void load_opcode(TestMachine *m, uint8_t opcode)
 {
-    switch (index) {
-        case 0:
-            return cpu->registers.b;
-
-        case 1:
-            return cpu->registers.c;
-
-        case 2:
-            return cpu->registers.d;
-
-        case 3:
-            return cpu->registers.e;
-
-        case 4:
-            return cpu->registers.h;
-
-        case 5:
-            return cpu->registers.l;
-
-        case 7:
-            return cpu->registers.a;
-
-        default:
-            return 0x00;
-    }
+    test_machine_load(m, PROGRAM_ADDRESS, &opcode, 1);
 }
 
-static void test_write_register(
-    CPU *cpu,
-    uint8_t index,
-    uint8_t value
-)
+/* Resets the CPU to distinct register values, with HL in work RAM. */
+static void reset_known(TestMachine *m, uint8_t flags)
 {
-    switch (index) {
-        case 0:
-            cpu->registers.b = value;
-            break;
+    Registers *r = &m->cpu.registers;
 
-        case 1:
-            cpu->registers.c = value;
-            break;
+    test_machine_reset_cpu(m);
 
-        case 2:
-            cpu->registers.d = value;
-            break;
-
-        case 3:
-            cpu->registers.e = value;
-            break;
-
-        case 4:
-            cpu->registers.h = value;
-            break;
-
-        case 5:
-            cpu->registers.l = value;
-            break;
-
-        case 7:
-            cpu->registers.a = value;
-            break;
-
-        default:
-            break;
-    }
+    r->a = 0x87;
+    r->b = 0x10;
+    r->c = 0x21;
+    r->d = 0x32;
+    r->e = 0x43;
+    r->h = HL_ADDRESS >> 8;
+    r->l = HL_ADDRESS & 0xFF;
+    r->f = flags;
+    r->sp = 0xFFF0;
 }
 
-
-/*
- * INC r8
- */
-
-static void test_inc_registers(void)
+static void assert_registers_equal(const Registers *got, const Registers *want)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    /*
-     * INC B
-     *
-     * 0x0F -> 0x10
-     *
-     * Z = 0
-     * N = 0
-     * H = 1
-     * C = preserved
-     */
-    {
-        const uint8_t program[] = {
-            0x04
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.b = 0x0F;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.b == 0x10);
-
-        assert(
-            cpu.registers.f ==
-            (uint8_t)(FLAG_H | FLAG_C)
-        );
-    }
-
-    /*
-     * INC C
-     *
-     * 0xFF -> 0x00
-     *
-     * Z = 1
-     * N = 0
-     * H = 1
-     * C = preserved
-     */
-    {
-        const uint8_t program[] = {
-            0x0C
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.c = 0xFF;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.c == 0x00);
-
-        assert(
-            cpu.registers.f ==
-            (uint8_t)(FLAG_Z | FLAG_H | FLAG_C)
-        );
-    }
-
-    /*
-     * INC A
-     *
-     * 0x01 -> 0x02
-     *
-     * No Z/N/H.
-     * C = preserved.
-     */
-    {
-        const uint8_t program[] = {
-            0x3C
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.a = 0x01;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.a == 0x02);
-        assert(cpu.registers.f == FLAG_C);
-    }
-
-    cleanup_cpu(&cartridge);
+    assert(memcmp(got, want, sizeof(Registers)) == 0);
 }
 
-
-/*
- * INC [HL]
- */
-
-static void test_inc_hl_memory(void)
+/* INC r8 / DEC r8 for every operand, including [HL]. */
+static void test_inc_dec_r8_wiring(TestMachine *m)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    const uint8_t program[] = {
-        0x34
-    };
-
-    write_program(
-        &cartridge,
-        program,
-        sizeof(program)
-    );
-
-    cpu.registers.h = 0xC0;
-    cpu.registers.l = 0x00;
-    cpu.registers.f = FLAG_C;
-
-    memory_write(
-        &memory,
-        0xC000,
-        0x0F
-    );
-
-    CpuCycles cycles = cpu_step(&cpu);
-
-    assert(cycles == 12);
-
-    assert(
-        memory_read(&memory, 0xC000) == 0x10
-    );
-
-    assert(
-        cpu.registers.f ==
-        (uint8_t)(FLAG_H | FLAG_C)
-    );
-
-    cleanup_cpu(&cartridge);
-}
-
-
-/*
- * DEC r8
- */
-
-static void test_dec_registers(void)
-{
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    /*
-     * DEC B
-     *
-     * 0x10 -> 0x0F
-     *
-     * Z = 0
-     * N = 1
-     * H = 1
-     * C = preserved
-     */
-    {
-        const uint8_t program[] = {
-            0x05
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.b = 0x10;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.b == 0x0F);
-
-        assert(
-            cpu.registers.f ==
-            (uint8_t)(FLAG_N | FLAG_H | FLAG_C)
-        );
-    }
-
-    /*
-     * DEC C
-     *
-     * 0x01 -> 0x00
-     *
-     * Z = 1
-     * N = 1
-     * H = 0
-     * C = preserved
-     */
-    {
-        const uint8_t program[] = {
-            0x0D
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.c = 0x01;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.c == 0x00);
-
-        assert(
-            cpu.registers.f ==
-            (uint8_t)(FLAG_Z | FLAG_N | FLAG_C)
-        );
-    }
-
-    /*
-     * DEC A
-     *
-     * 0x02 -> 0x01
-     *
-     * Z = 0
-     * N = 1
-     * H = 0
-     * C = preserved
-     */
-    {
-        const uint8_t program[] = {
-            0x3D
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.a = 0x02;
-        cpu.registers.f = FLAG_C;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 4);
-        assert(cpu.registers.a == 0x01);
-
-        assert(
-            cpu.registers.f ==
-            (uint8_t)(FLAG_N | FLAG_C)
-        );
-    }
-
-    cleanup_cpu(&cartridge);
-}
-
-
-/*
- * DEC [HL]
- */
-
-static void test_dec_hl_memory(void)
-{
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    const uint8_t program[] = {
-        0x35
-    };
-
-    write_program(
-        &cartridge,
-        program,
-        sizeof(program)
-    );
-
-    cpu.registers.h = 0xC0;
-    cpu.registers.l = 0x00;
-    cpu.registers.f = FLAG_C;
-
-    memory_write(
-        &memory,
-        0xC000,
-        0x10
-    );
-
-    CpuCycles cycles = cpu_step(&cpu);
-
-    assert(cycles == 12);
-
-    assert(
-        memory_read(&memory, 0xC000) == 0x0F
-    );
-
-    assert(
-        cpu.registers.f ==
-        (uint8_t)(FLAG_N | FLAG_H | FLAG_C)
-    );
-
-    cleanup_cpu(&cartridge);
-}
-
-
-/*
- * INC r16
- *
- * INC r16 does not modify flags.
- */
-
-static void test_inc_register_pairs(void)
-{
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    /*
-     * INC BC
-     *
-     * 0x12FF -> 0x1300
-     */
-    {
-        const uint8_t program[] = {
-            0x03
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.b = 0x12;
-        cpu.registers.c = 0xFF;
-        cpu.registers.f = 0xF0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.b == 0x13);
-        assert(cpu.registers.c == 0x00);
-        assert(cpu.registers.f == 0xF0);
-    }
-
-    /*
-     * INC DE
-     *
-     * 0xFFFF -> 0x0000
-     */
-    {
-        const uint8_t program[] = {
-            0x13
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.d = 0xFF;
-        cpu.registers.e = 0xFF;
-        cpu.registers.f = 0xA0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.d == 0x00);
-        assert(cpu.registers.e == 0x00);
-        assert(cpu.registers.f == 0xA0);
-    }
-
-    /*
-     * INC HL
-     *
-     * 0x12FF -> 0x1300
-     */
-    {
-        const uint8_t program[] = {
-            0x23
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.h = 0x12;
-        cpu.registers.l = 0xFF;
-        cpu.registers.f = 0x50;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.h == 0x13);
-        assert(cpu.registers.l == 0x00);
-        assert(cpu.registers.f == 0x50);
-    }
-
-    /*
-     * INC SP
-     *
-     * 0xFFFF -> 0x0000
-     */
-    {
-        const uint8_t program[] = {
-            0x33
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.sp = 0xFFFF;
-        cpu.registers.f = 0xF0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.sp == 0x0000);
-        assert(cpu.registers.f == 0xF0);
-    }
-
-    cleanup_cpu(&cartridge);
-}
-
-
-/*
- * DEC r16
- *
- * DEC r16 does not modify flags.
- */
-
-static void test_dec_register_pairs(void)
-{
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    /*
-     * DEC BC
-     *
-     * 0x1200 -> 0x11FF
-     */
-    {
-        const uint8_t program[] = {
-            0x0B
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.b = 0x12;
-        cpu.registers.c = 0x00;
-        cpu.registers.f = 0xF0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.b == 0x11);
-        assert(cpu.registers.c == 0xFF);
-        assert(cpu.registers.f == 0xF0);
-    }
-
-    /*
-     * DEC DE
-     *
-     * 0x0000 -> 0xFFFF
-     */
-    {
-        const uint8_t program[] = {
-            0x1B
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.d = 0x00;
-        cpu.registers.e = 0x00;
-        cpu.registers.f = 0xA0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.d == 0xFF);
-        assert(cpu.registers.e == 0xFF);
-        assert(cpu.registers.f == 0xA0);
-    }
-
-    /*
-     * DEC HL
-     *
-     * 0x1200 -> 0x11FF
-     */
-    {
-        const uint8_t program[] = {
-            0x2B
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.h = 0x12;
-        cpu.registers.l = 0x00;
-        cpu.registers.f = 0x50;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.h == 0x11);
-        assert(cpu.registers.l == 0xFF);
-        assert(cpu.registers.f == 0x50);
-    }
-
-    /*
-     * DEC SP
-     *
-     * 0x0000 -> 0xFFFF
-     */
-    {
-        const uint8_t program[] = {
-            0x3B
-        };
-
-        write_program(
-            &cartridge,
-            program,
-            sizeof(program)
-        );
-
-        cpu.registers.pc = 0x0100;
-        cpu.registers.sp = 0x0000;
-        cpu.registers.f = 0xF0;
-
-        CpuCycles cycles = cpu_step(&cpu);
-
-        assert(cycles == 8);
-        assert(cpu.registers.sp == 0xFFFF);
-        assert(cpu.registers.f == 0xF0);
-    }
-
-    cleanup_cpu(&cartridge);
-}
-
-
-/*
- * LD r8,r8
- *
- * Encoding:
- *
- * 01DDDSSS
- *
- * DDD = destination
- * SSS = source
- *
- * 000 = B
- * 001 = C
- * 010 = D
- * 011 = E
- * 100 = H
- * 101 = L
- * 110 = [HL]
- * 111 = A
- *
- * 0x76 is HALT, not LD H,[HL].
- */
-
-static void test_ld_r8_r8(void)
-{
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
-
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
-
-    for (uint8_t destination = 0;
-         destination < 8;
-         destination++) {
-
-        for (uint8_t source = 0;
-             source < 8;
-             source++) {
-
-            /*
-             * 0x76 = HALT, não LD [HL],[HL].
-             */
-            if (destination == 6 && source == 6) {
-                continue;
-            }
-
-            /*
-             * Estado inicial conhecido.
-             */
-            cpu.registers.pc = 0x0100;
-            cpu.halted = false;
-            cpu.stopped = false;
-
-            cpu.registers.b = 0x10;
-            cpu.registers.c = 0x21;
-            cpu.registers.d = 0x32;
-            cpu.registers.e = 0x43;
-            cpu.registers.h = 0xC0;
-            cpu.registers.l = 0x00;
-            cpu.registers.a = 0x87;
-
-            /*
-             * LD não altera flags.
-             */
-            cpu.registers.f = 0xF0;
-
-            /*
-             * H e L não são alterados artificialmente.
-             *
-             * Isso mantém HL em C000 mesmo quando H ou L
-             * são utilizados como registrador fonte.
-             */
-            if (source != 4 &&
-                source != 5 &&
-                source != 6) {
-
-                test_write_register(
-                    &cpu,
-                    source,
-                    test_value_for_register(source)
-                );
-            }
-
-            /*
-             * HL agora representa o endereço real que
-             * será utilizado por [HL].
-             */
-            uint16_t hl_address =
-                (uint16_t)(
-                    ((uint16_t)cpu.registers.h << 8) |
-                    cpu.registers.l
-                );
-
-            /*
-             * Coloca um valor conhecido em [HL].
-             */
-            memory_write(
-                &memory,
-                hl_address,
-                0xAB
-            );
-
-            /*
-             * Captura o valor esperado ANTES da execução.
-             */
-            uint8_t expected;
-
-            if (source == 6) {
-                expected = 0xAB;
-            } else {
-                expected = test_read_register(
-                    &cpu,
-                    source
-                );
-            }
-
-            /*
-             * 01DDDSSS
-             */
-            uint8_t opcode = (uint8_t)(
-                0x40U |
-                ((uint8_t)(destination << 3U)) |
-                source
-            );
-
-            /*
-             * O opcode está na ROM.
-             *
-             * Não podemos usar cpu_write8(), pois a ROM
-             * é somente leitura através do Bus.
-             */
-            cartridge.rom[0x0100] = opcode;
-
-            /*
-             * Executa.
-             */
-            CpuCycles cycles = cpu_step(&cpu);
-
-            /*
-             * LD r8,r8 possui um byte.
-             */
-            assert(cpu.registers.pc == 0x0101);
-
-            /*
-             * LD não modifica flags.
-             */
-            assert(cpu.registers.f == 0xF0);
-
-            /*
-             * LD não deve colocar a CPU em HALT.
-             */
-            assert(!cpu.halted);
-
-            /*
-             * Registrador -> registrador:
-             *     4 ciclos
-             *
-             * Registrador <-> [HL]:
-             *     8 ciclos
-             */
-            if (destination == 6 || source == 6) {
-                assert(cycles == 8);
-            } else {
-                assert(cycles == 4);
-            }
-
-            /*
-             * Verifica o destino.
-             */
-            if (destination == 6) {
-                /*
-                 * LD [HL],r8
-                 *
-                 * Usa o endereço HL que existia antes
-                 * da execução.
-                 */
-                assert(
-                    memory_read(
-                        &memory,
-                        hl_address
-                    ) == expected
-                );
-            } else {
-                /*
-                 * LD r8,r8
-                 * LD r8,[HL]
-                 */
-                assert(
-                    test_read_register(
-                        &cpu,
-                        destination
-                    ) == expected
-                );
+    static const uint8_t values[] = { 0x00, 0x0F, 0x10, 0x80, 0xFF };
+
+    for (unsigned dec = 0; dec < 2; dec++) {
+        for (unsigned index = 0; index < 8; index++) {
+            load_opcode(m, (uint8_t)(0x04 | (index << 3) | (dec ? 1 : 0)));
+
+            for (size_t i = 0; i < sizeof(values); i++) {
+                for (unsigned carry = 0; carry < 2; carry++) {
+                    const uint8_t value = values[i];
+
+                    reset_known(m, carry ? FLAG_C : 0);
+
+                    if (index == HL_INDEX) {
+                        memory_write(&m->memory, HL_ADDRESS, value);
+                    } else {
+                        *r8_register(&m->cpu.registers, index) = value;
+                    }
+
+                    Registers expected = m->cpu.registers;
+                    const uint8_t result =
+                        (uint8_t)(dec ? value - 1 : value + 1);
+
+                    expected.pc = PROGRAM_ADDRESS + 1;
+                    expected.f = (uint8_t)(
+                        (result == 0 ? FLAG_Z : 0) |
+                        (dec ? FLAG_N : 0) |
+                        (((value ^ 1 ^ result) & 0x10) != 0 ? FLAG_H : 0) |
+                        (carry ? FLAG_C : 0)
+                    );
+
+                    if (index != HL_INDEX) {
+                        *r8_register(&expected, index) = result;
+                    }
+
+                    CpuCycles cycles = cpu_step(&m->cpu);
+
+                    assert(cycles == (index == HL_INDEX ? 12 : 4));
+                    assert_registers_equal(&m->cpu.registers, &expected);
+
+                    if (index == HL_INDEX) {
+                        assert(memory_read(&m->memory, HL_ADDRESS) == result);
+                    }
+                }
             }
         }
     }
-
-    cleanup_cpu(&cartridge);
-
-    printf("LD r8,r8 tests passed!\n");
 }
 
-static void test_cpu_control_states_and_flags(void)
+static void store_r16(Registers *registers, unsigned pair, uint16_t value)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge = {0};
+    switch (pair) {
+        case 0:
+            registers->b = (uint8_t)(value >> 8);
+            registers->c = (uint8_t)value;
+            break;
 
-    setup_cpu(
-        &cpu,
-        &bus,
-        &memory,
-        &cartridge
-    );
+        case 1:
+            registers->d = (uint8_t)(value >> 8);
+            registers->e = (uint8_t)value;
+            break;
 
-    cartridge.rom[0x0100] = 0x76;
+        case 2:
+            registers->h = (uint8_t)(value >> 8);
+            registers->l = (uint8_t)value;
+            break;
 
-    assert(cpu.registers.f == 0xB0);
-
-    CpuCycles cycles = cpu_step(&cpu);
-
-    assert(cycles == 4);
-    assert(cpu.halted);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(cpu.registers.pc == 0x0101);
-
-    cycles = cpu_step(&cpu);
-
-    assert(cycles == 4);
-    assert(cpu.halted);
-    assert(cpu.step_status == CPU_STEP_HALTED);
-    assert(cpu.registers.pc == 0x0101);
-
-    cpu.halted = false;
-    cpu.registers.pc = 0x0100;
-    cartridge.rom[0x0100] = 0xD3;
-
-    cycles = cpu_step(&cpu);
-
-    assert(cycles == 0);
-    assert(!cpu.halted);
-    assert(cpu.step_status == CPU_STEP_UNIMPLEMENTED_OPCODE);
-
-    cpu.registers.pc = 0x0100;
-    cartridge.rom[0x0100] = 0x04;
-    cpu.registers.b = 0x00;
-    cpu.registers.f = 0x1F;
-
-    cycles = cpu_step(&cpu);
-
-    assert(cycles == 4);
-    assert(cpu.registers.f == FLAG_C);
-    assert((cpu.registers.f & 0x0F) == 0);
-
-    cleanup_cpu(&cartridge);
+        default:
+            registers->sp = value;
+            break;
+    }
 }
 
+/* INC rr / DEC rr: BC, DE, HL, SP. Wraps and never touches the flags. */
+static void test_inc_dec_r16(TestMachine *m)
+{
+    static const struct {
+        uint16_t low;  /* the smaller value; INC goes low -> high */
+        uint16_t high;
+    } cases[] = {
+        { 0x12FF, 0x1300 },
+        { 0xFFFF, 0x0000 }, /* wraps: INC 0xFFFF = 0x0000 */
+        { 0x0000, 0x0001 },
+        { 0x7FFF, 0x8000 }
+    };
 
-/*
- * Main
- */
+    for (unsigned dec = 0; dec < 2; dec++) {
+        for (unsigned pair = 0; pair < 4; pair++) {
+            load_opcode(m, (uint8_t)(0x03 | (pair << 4) | (dec ? 8 : 0)));
+
+            for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+                const uint16_t before = dec ? cases[i].high : cases[i].low;
+                const uint16_t after = dec ? cases[i].low : cases[i].high;
+
+                for (unsigned flags = 0x00; flags <= 0xF0; flags += 0xF0) {
+                    reset_known(m, (uint8_t)flags);
+                    store_r16(&m->cpu.registers, pair, before);
+
+                    Registers expected = m->cpu.registers;
+
+                    store_r16(&expected, pair, after);
+                    expected.pc = PROGRAM_ADDRESS + 1;
+
+                    CpuCycles cycles = cpu_step(&m->cpu);
+
+                    assert(cycles == 8);
+                    assert_registers_equal(&m->cpu.registers, &expected);
+                }
+            }
+        }
+    }
+}
+
+/* LD r8,r8 for every operand pair, including [HL]; flags are untouched. */
+static void test_ld_r8_r8(TestMachine *m)
+{
+    for (unsigned destination = 0; destination < 8; destination++) {
+        for (unsigned source = 0; source < 8; source++) {
+            if (destination == HL_INDEX && source == HL_INDEX) {
+                continue; /* 0x76 is HALT. */
+            }
+
+            load_opcode(m, (uint8_t)(0x40 | (destination << 3) | source));
+            reset_known(m, 0xF0);
+            memory_write(&m->memory, HL_ADDRESS, 0x5A);
+
+            Registers expected = m->cpu.registers;
+            const uint8_t moved = source == HL_INDEX
+                ? 0x5A
+                : *r8_register(&expected, source);
+
+            expected.pc = PROGRAM_ADDRESS + 1;
+
+            if (destination != HL_INDEX) {
+                *r8_register(&expected, destination) = moved;
+            }
+
+            CpuCycles cycles = cpu_step(&m->cpu);
+
+            assert(cycles ==
+                   (source == HL_INDEX || destination == HL_INDEX ? 8 : 4));
+            assert_registers_equal(&m->cpu.registers, &expected);
+
+            if (destination == HL_INDEX) {
+                /* The address is HL as it was before the instruction. */
+                assert(memory_read(&m->memory, HL_ADDRESS) == moved);
+            }
+        }
+    }
+}
+
+static void test_control_states_and_flags(TestMachine *m)
+{
+    CPU *cpu = &m->cpu;
+
+    /* Post-boot state. */
+    test_machine_reset_cpu(m);
+    assert(cpu->registers.f == 0xB0);
+    assert(cpu->registers.pc == PROGRAM_ADDRESS);
+
+    /* HALT, then a halted step. */
+    load_opcode(m, 0x76);
+
+    assert(cpu_step(cpu) == 4);
+    assert(cpu->halted);
+    assert(cpu->step_status == CPU_STEP_EXECUTED);
+    assert(cpu->registers.pc == PROGRAM_ADDRESS + 1);
+
+    assert(cpu_step(cpu) == 4);
+    assert(cpu->halted);
+    assert(cpu->step_status == CPU_STEP_HALTED);
+    assert(cpu->registers.pc == PROGRAM_ADDRESS + 1);
+
+    /* An undefined opcode consumes no time and leaves PC on it. */
+    load_opcode(m, 0xD3);
+    test_machine_reset_cpu(m);
+
+    assert(cpu_step(cpu) == 0);
+    assert(!cpu->halted);
+    assert(cpu->step_status == CPU_STEP_UNIMPLEMENTED_OPCODE);
+    assert(cpu->registers.pc == PROGRAM_ADDRESS);
+    assert(cpu->fault_pc == PROGRAM_ADDRESS);
+    assert(cpu->fault_opcode == 0xD3);
+
+    /* The low nibble of F always reads as zero. */
+    load_opcode(m, 0x04); /* INC B */
+    test_machine_reset_cpu(m);
+    cpu->registers.b = 0x00;
+    cpu->registers.f = 0x1F;
+
+    assert(cpu_step(cpu) == 4);
+    assert(cpu->registers.f == FLAG_C);
+}
 
 int main(void)
 {
-    test_inc_registers();
-    test_inc_hl_memory();
+    TestMachine machine;
 
-    test_dec_registers();
-    test_dec_hl_memory();
+    test_machine_init(&machine);
 
-    test_inc_register_pairs();
-    test_dec_register_pairs();
+    test_inc_dec_r8_wiring(&machine);
+    test_inc_dec_r16(&machine);
+    test_ld_r8_r8(&machine);
+    test_control_states_and_flags(&machine);
 
-    test_ld_r8_r8();
-    test_cpu_control_states_and_flags();
+    test_machine_destroy(&machine);
 
     printf("All CPU tests passed!\n");
 
