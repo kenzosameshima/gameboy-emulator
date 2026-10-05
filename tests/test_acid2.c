@@ -20,7 +20,6 @@
 #include <emulator.h>
 
 enum {
-    CYCLES_PER_FRAME_RUN = 70224,
     FRAMES_TO_RUN = 30
 };
 
@@ -61,7 +60,7 @@ int main(void)
 
     while (emulator_frame_count(emulator) < FRAMES_TO_RUN) {
         EmulatorStatus status =
-            emulator_run_cycles(emulator, CYCLES_PER_FRAME_RUN);
+            emulator_run_frame(emulator);
 
         /* The ROM ends by halting, which is fine. */
         assert(status == EMULATOR_OK || status == EMULATOR_STALLED);

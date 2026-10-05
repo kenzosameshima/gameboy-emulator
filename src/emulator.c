@@ -191,6 +191,41 @@ EmulatorStatus emulator_run_cycles(Emulator *emulator, uint64_t cycles)
 }
 
 
+EmulatorStatus emulator_run_frame(Emulator *emulator)
+{
+    if (emulator == NULL) {
+        return EMULATOR_ERROR_INVALID_ARGUMENT;
+    }
+    if (emulator->cartridge.rom == NULL) {
+        return EMULATOR_ERROR_NO_ROM;
+    }
+
+    uint64_t start = emulator->cycles;
+    uint64_t frame = emulator->ppu.frames;
+    EmulatorStatus status = EMULATOR_OK;
+
+    atomic_store(&emulator->running, true);
+    while (!atomic_load(&emulator->stop_requested) &&
+           emulator->ppu.frames == frame) {
+        if ((emulator->ppu.lcdc & PPU_LCDC_LCD_ENABLE) == 0 &&
+            emulator->cycles - start >= 70224) {
+            break;
+        }
+        status = emulator_step(emulator);
+        if (status != EMULATOR_OK) {
+            break;
+        }
+        if (emulator_is_stalled(emulator)) {
+            status = EMULATOR_STALLED;
+            break;
+        }
+    }
+    atomic_store(&emulator->running, false);
+    atomic_store(&emulator->stop_requested, false);
+    return status;
+}
+
+
 EmulatorStatus emulator_run(Emulator *emulator)
 {
     return emulator_run_cycles(emulator, UINT64_MAX);

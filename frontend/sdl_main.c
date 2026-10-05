@@ -41,7 +41,6 @@ enum {
     DEFAULT_SCALE = 4,
     SAVE_INTERVAL_MS = 30000,
     SAVE_PATH_CAPACITY = 1024,
-    CYCLES_PER_FRAME = 70224,
 
     AUDIO_RATE = 48000,
     AUDIO_BUFFER_FRAMES = 1024,     /* SDL's device buffer */
@@ -405,7 +404,7 @@ static int run(
 
         emulator_set_buttons(emulator, pressed);
 
-        EmulatorStatus status = emulator_run_cycles(emulator, CYCLES_PER_FRAME);
+        EmulatorStatus status = emulator_run_frame(emulator);
 
         /* A CPU waiting in HALT forever just leaves the picture as it is. */
         if (status != EMULATOR_OK && status != EMULATOR_STALLED) {
