@@ -289,7 +289,11 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
 
     if (bus_is_timer_address(address)) {
         if (bus->timer != NULL) {
+            uint16_t before = bus->timer->divider;
             timer_write(bus->timer, address, value);
+            if (address == TIMER_DIV_ADDRESS && bus->serial != NULL) {
+                serial_divider_changed(bus->serial, before, bus->timer->divider);
+            }
         }
         return;
     }

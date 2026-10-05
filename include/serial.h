@@ -65,4 +65,7 @@ void serial_write(Serial *serial, uint16_t address, uint8_t value);
 
 void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider);
 
+/* Observe a counter transition caused by a DIV register write. */
+void serial_divider_changed(Serial *serial, uint16_t before, uint16_t after);
+
 #endif

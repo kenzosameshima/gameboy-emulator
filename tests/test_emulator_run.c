@@ -305,6 +305,32 @@ static void test_serial_interrupt_end_to_end(void)
     emulator_destroy(emulator);
 }
 
+static void test_serial_div_write_edges(void)
+{
+    Program program = {0};
+    Emulator *emulator = load(&program);
+    bus_write(&emulator->bus, SERIAL_SC_ADDRESS, 0x81);
+    for (unsigned i = 0; i < 8; i++) {
+        /* A low clock reset must not shift or complete the transfer. */
+        emulator->timer.divider = 0x00FC;
+        bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0xFF);
+        assert(emulator->serial.bits_remaining == 8 - i);
+        /* A reset while bit 8 is high shifts exactly once, immediately. */
+        emulator->timer.divider = 0x0100;
+        bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0);
+        assert(emulator->serial.bits_remaining == 7 - i);
+        assert(emulator->timer.divider == 0);
+        assert(emulator->serial.transferring == (i != 7));
+    }
+    assert(bus_read(&emulator->bus, SERIAL_SB_ADDRESS) == 0xFF);
+    assert((emulator->interrupts.interrupt_flag & INTERRUPT_SERIAL) != 0);
+    bus_write(&emulator->bus, SERIAL_SC_ADDRESS, 0x80);
+    emulator->timer.divider = 0x0100;
+    bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0);
+    assert(emulator->serial.bits_remaining == 8);
+    emulator_destroy(emulator);
+}
+
 static void test_rom_load_failures(void)
 {
     Program program = {0};
@@ -382,6 +408,7 @@ int main(void)
     test_illegal_opcode_fault();
     test_serial_output_and_stop();
     test_serial_interrupt_end_to_end();
+    test_serial_div_write_edges();
     test_status_strings();
 
     assert(remove(rom_path) == 0);

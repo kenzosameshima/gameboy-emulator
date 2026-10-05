@@ -67,24 +67,29 @@ void serial_write(Serial *serial, uint16_t address, uint8_t value)
     }
 }
 
-void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider)
+/* Both elapsed cycles and DIV writes can lower the serial clock. */
+void serial_divider_changed(Serial *serial, uint16_t before, uint16_t after)
 {
-    if (!serial->transferring) {
+    if (!serial->transferring || (before & ~after & 0x100) == 0) {
         return;
     }
-
-    /* Falling edges of bit 8 are the multiples of 512 the counter crossed. */
-    uint16_t before = (uint16_t)(divider - cycles);
-    unsigned edges = (unsigned)((divider >> 9) - (before >> 9)) & 0x7F;
-
-    if (edges < serial->bits_remaining) {
-        serial->bits_remaining = (uint8_t)(serial->bits_remaining - edges);
+    serial->bits_remaining--;
+    if (serial->bits_remaining != 0) {
         return;
     }
-
     serial->transferring = false;
-    serial->bits_remaining = 0;
     serial->sb = 0xFF;
     serial->sc = (uint8_t)(serial->sc & ~SERIAL_SC_START);
     interrupts_request(serial->interrupts, INTERRUPT_SERIAL);
+}
+
+void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider)
+{
+    /* Inspect every transition, including counter wrap and larger steps. */
+    uint16_t before = (uint16_t)(divider - cycles);
+    for (CpuCycles i = 0; i < cycles && serial->transferring; i++) {
+        uint16_t after = (uint16_t)(before + 1);
+        serial_divider_changed(serial, before, after);
+        before = after;
+    }
 }
