@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <cartridge.h>
 
 #include "mapper.h"
@@ -46,17 +50,15 @@ static bool write_file_atomically(
         ok = (fclose(file) == 0) && ok;
     }
 
-#ifdef _WIN32
-    /* rename() does not replace an existing file on Windows. */
-    if (ok) {
-        remove(path);
-    }
-#endif
-
-    ok = ok && rename(temporary, path) == 0;
-
     if (!ok) {
         remove(temporary);
+    } else {
+        /* Keep a complete temporary save if replacement fails. */
+#ifdef _WIN32
+        ok = MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+        ok = rename(temporary, path) == 0;
+#endif
     }
 
     free(temporary);
