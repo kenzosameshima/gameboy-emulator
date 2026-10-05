@@ -117,8 +117,9 @@ EmulatorStatus emulator_step(Emulator *emulator);
 EmulatorStatus emulator_run_cycles(Emulator *emulator, uint64_t cycles);
 
 /* Runs to the next VBlank entry, or at least 70224 T-cycles when the LCD
- * is off. May overshoot by less than one instruction. Stop requests,
- * errors and CPU stalls have the same semantics as emulator_run_cycles(). */
+ * is off. May overshoot by less than one instruction. Stop requests
+ * and errors end the run. A stalled CPU still clocks the picture and sound
+ * to the frame boundary, then returns EMULATOR_STALLED. */
 EmulatorStatus emulator_run_frame(Emulator *emulator);
 
 
