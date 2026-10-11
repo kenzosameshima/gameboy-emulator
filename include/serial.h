@@ -49,7 +49,9 @@ typedef struct Serial {
  * T-cycles at a multiple of 512, and the transfer completes on the eighth.
  * It does not start at the SC write but at the next edge, so it takes
  * between 7 * 512 and 8 * 512 cycles from the write, depending on where the
- * counter is. serial_step() is given the divider after the step.
+ * counter is. serial_step() is given the counter bits that fell during the
+ * M-cycle (see timer_take_falling_edges()), so a DIV write that drops bit 8
+ * shifts a bit too.
  */
 
 /* Clears state and the output callback. */
@@ -63,9 +65,6 @@ void serial_set_output(Serial *serial, SerialOutputFn output, void *context);
 uint8_t serial_read(const Serial *serial, uint16_t address);
 void serial_write(Serial *serial, uint16_t address, uint8_t value);
 
-void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider);
-
-/* Observe a counter transition caused by a DIV register write. */
-void serial_divider_changed(Serial *serial, uint16_t before, uint16_t after);
+void serial_step(Serial *serial, CounterEdges fell);
 
 #endif

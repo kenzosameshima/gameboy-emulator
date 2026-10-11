@@ -31,7 +31,7 @@ main.c            tools/rom_test.c
 
 ### Timing model
 
-Time is modelled per M-cycle (4 T-cycles). The CPU spends time only through a few primitives: a bus access followed by a 4 T-cycle tick, or an explicit idle tick for an internal delay. After each tick the CPU calls a tick handler, which is how the Emulator advances the Timer and Serial in lockstep with the instruction:
+Time is modelled per M-cycle (4 T-cycles). The CPU spends time only through a few primitives: a bus access followed by a 4 T-cycle tick, or an explicit idle tick for an internal delay. After each tick the CPU calls a tick handler, which is how the Emulator advances the other components in lockstep with the instruction. The Timer records which bits of the system counter fell during the M-cycle, from counting or from a DIV write the CPU made just before the tick, and the tick hands that set to Serial and the APU, which are clocked by those edges:
 
 ```text
 emulator_step()
@@ -42,7 +42,10 @@ emulator_step()
                     |
                     +--> bus access, then tick handler
                             |
-                            +--> emulator_tick(): timer_step, serial_step
+                            +--> emulator_tick(): timer_step, then the
+                                 counter edges it took to serial_step and
+                                 apu_step, then dma_step, ppu_step and
+                                 cartridge_step
 ```
 
 A bus access therefore sees the machine as it is after all the earlier M-cycles of the same instruction. `cpu_step()` returns the total T-cycles of the step, which is exactly what was ticked. Any future component that runs off the CPU clock (PPU, DMA, APU) is added in `emulator_tick()`.

@@ -286,18 +286,9 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
             serial_write(bus->serial, address, value);
             break;
 
-        case BUS_REGION_TIMER: {
-            uint16_t before = bus->timer->divider;
+        case BUS_REGION_TIMER:
             timer_write(bus->timer, address, value);
-            if (address == TIMER_DIV_ADDRESS) {
-                serial_divider_changed(
-                    bus->serial,
-                    before,
-                    bus->timer->divider
-                );
-            }
             break;
-        }
 
         case BUS_REGION_IF:
             bus->interrupts->interrupt_flag =

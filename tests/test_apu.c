@@ -14,6 +14,7 @@
 #include <stdlib.h>
 
 #include <apu.h>
+#include <timer.h>
 
 enum {
     /* One output frame is 16 T-cycles, an exact 4 M-cycles. */
@@ -25,16 +26,28 @@ enum {
 };
 
 static Apu apu;
-static uint16_t divider;
 
-/* The system counter the frame sequencer is clocked from. */
+/* The frame sequencer is clocked from the system counter. As the Emulator
+ * does, each M-cycle steps a real Timer and hands the APU the counter bits
+ * that fell. */
+static Timer timer;
+static InterruptRegisters timer_interrupts;
+
+/* Setup only: a counter at `divider` with no edges pending. */
+static void counter_at(uint16_t divider)
+{
+    interrupts_init(&timer_interrupts);
+    timer_init(&timer, &timer_interrupts);
+    timer.divider = divider;
+}
+
 static void run(unsigned cycles)
 {
     assert(cycles % 4 == 0);
 
     for (unsigned done = 0; done < cycles; done += 4) {
-        divider = (uint16_t)(divider + 4);
-        apu_step(&apu, 4, divider);
+        timer_step(&timer, 4);
+        apu_step(&apu, 4, timer_take_falling_edges(&timer));
     }
 }
 
@@ -54,11 +67,11 @@ static bool channel_on(unsigned channel)
 }
 
 /* A powered-off and on APU with every register at 0 and the frame
- * sequencer at step 0, and a divider that starts a tick from zero. */
+ * sequencer at step 0, and a counter that starts a tick from zero. */
 static void fresh(void)
 {
     apu_init(&apu);
-    divider = 0;
+    counter_at(0);
     write(APU_NR52_ADDRESS, 0x00);
     write(APU_NR52_ADDRESS, 0x80);
 }
@@ -723,10 +736,27 @@ static void test_divider_reset_clocks_the_sequencer(void)
     run(0x1000);                     /* bit 12 now set, no edge yet */
     assert(channel_on(1));
 
-    /* DIV was written: the counter drops and bit 12 falls. Any drop that
-     * clears bit 12 does it, not only one to 0. */
-    divider = 0x0100;
-    apu_step(&apu, 4, divider);
+    /* DIV is written: the counter drops to 0 and bit 12 falls, which the
+     * next M-cycle delivers. */
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    run(4);
+    assert(!channel_on(1));
+}
+
+/* Only a fall of counter bit 12 clocks the frame sequencer. */
+static void test_only_counter_bit_12_clocks_the_sequencer(void)
+{
+    fresh();
+    write(APU_NR22_ADDRESS, 0xF0);
+    write(APU_NR21_ADDRESS, 0x3F);   /* length 1 */
+    write(APU_NR24_ADDRESS, 0xC0);
+
+    for (unsigned i = 0; i < 16; i++) {
+        apu_step(&apu, 4, (CounterEdges)~0x1000);
+    }
+    assert(channel_on(1));
+
+    apu_step(&apu, 4, 0x1000);
     assert(!channel_on(1));
 }
 
@@ -1105,6 +1135,7 @@ int main(void)
     test_length_reload_on_trigger();
     test_length_counters_survive_power_off();
     test_divider_reset_clocks_the_sequencer();
+    test_only_counter_bit_12_clocks_the_sequencer();
     test_noise_period();
     test_wave_ram_while_playing();
     test_full_buffer_keeps_the_newest();

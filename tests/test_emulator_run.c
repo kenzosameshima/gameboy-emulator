@@ -364,29 +364,114 @@ static void test_serial_interrupt_end_to_end(void)
     emulator_destroy(emulator);
 }
 
-static void test_serial_div_write_edges(void)
+/*
+ * A DIV write clocks serial and the APU by the end of the instruction that
+ * makes it: the timer records the counter bits that fell, and the tick of
+ * the same M-cycle delivers them. Each check runs one LDH (04),A, which
+ * writes in its third M-cycle, so 8 cycles after the counter value the test
+ * sets before it. The counter is only set between instructions, when no
+ * edge is pending.
+ */
+static Emulator *load_div_writes(void)
 {
+    static const uint8_t write_div[] = { 0xE0, 0x04 };   /* LDH (04),A */
     Program program = {0};
-    Emulator *emulator = load(&program);
+
+    for (uint16_t pc = 0x0100; pc < 0x0100 + 2 * 32; pc += 2) {
+        place(&program, pc, write_div, sizeof(write_div));
+    }
+
+    return load(&program);
+}
+
+static void test_div_write_clocks_serial(void)
+{
+    Emulator *emulator = load_div_writes();
+
     bus_write(&emulator->bus, SERIAL_SC_ADDRESS, 0x81);
     for (unsigned i = 0; i < 8; i++) {
-        /* A low clock reset must not shift or complete the transfer. */
-        emulator->timer.divider = 0x00FC;
-        bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0xFF);
+        /* 0000 + 8: bit 8 is low at the write, so nothing shifts. */
+        emulator->timer.divider = 0x0000;
+        assert(emulator_step(emulator) == EMULATOR_OK);
         assert(emulator->serial.bits_remaining == 8 - i);
-        /* A reset while bit 8 is high shifts exactly once, immediately. */
+
+        /* 0100 + 8: bit 8 is high at the write, so exactly one bit shifts. */
         emulator->timer.divider = 0x0100;
-        bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0);
+        assert(emulator_step(emulator) == EMULATOR_OK);
+        assert(emulator->timer.divider == 4);
         assert(emulator->serial.bits_remaining == 7 - i);
-        assert(emulator->timer.divider == 0);
         assert(emulator->serial.transferring == (i != 7));
     }
     assert(bus_read(&emulator->bus, SERIAL_SB_ADDRESS) == 0xFF);
     assert((emulator->interrupts.interrupt_flag & INTERRUPT_SERIAL) != 0);
+
+    /* With the external clock there is no transfer to clock. */
     bus_write(&emulator->bus, SERIAL_SC_ADDRESS, 0x80);
     emulator->timer.divider = 0x0100;
-    bus_write(&emulator->bus, TIMER_DIV_ADDRESS, 0);
+    assert(emulator_step(emulator) == EMULATOR_OK);
     assert(emulator->serial.bits_remaining == 8);
+    emulator_destroy(emulator);
+}
+
+static void test_div_write_clocks_the_apu(void)
+{
+    for (unsigned bit_12_high = 0; bit_12_high <= 1; bit_12_high++) {
+        Emulator *emulator = load_div_writes();
+        Bus *bus = &emulator->bus;
+
+        /* Power-cycling puts the frame sequencer at step 0, whose tick
+         * clocks length. Channel 2 then plays with a length of 1. */
+        bus_write(bus, APU_NR52_ADDRESS, 0x00);
+        bus_write(bus, APU_NR52_ADDRESS, 0x80);
+        bus_write(bus, APU_NR22_ADDRESS, 0xF0);
+        bus_write(bus, APU_NR21_ADDRESS, 0x3F);
+        bus_write(bus, APU_NR24_ADDRESS, 0xC0);
+        assert((bus_read(bus, APU_NR52_ADDRESS) & 0x02) != 0);
+
+        /* 1000 + 8 has bit 12 set at the write and 0000 + 8 does not. */
+        emulator->timer.divider = bit_12_high ? 0x1000 : 0x0000;
+        assert(emulator_step(emulator) == EMULATOR_OK);
+        assert(emulator->timer.divider == 4);
+
+        bool playing = (bus_read(bus, APU_NR52_ADDRESS) & 0x02) != 0;
+        assert(playing == !bit_12_high);
+        emulator_destroy(emulator);
+    }
+}
+
+/*
+ * A fall from counting reaches serial and the APU in the M-cycle it happens
+ * in, not the next one: the tick advances the timer before it takes the
+ * edges. A NOP is one M-cycle, so with the counter 4 short of 0200 (or
+ * 2000) the NOP's own tick is the one in which bit 8 (or 12) falls.
+ */
+static void test_counting_edges_arrive_in_their_m_cycle(void)
+{
+    Program program = {0};                         /* all NOPs */
+    Emulator *emulator = load(&program);
+
+    bus_write(&emulator->bus, SERIAL_SC_ADDRESS, 0x81);
+    emulator->timer.divider = 0x01F8;
+    assert(emulator_step(emulator) == EMULATOR_OK);   /* 01F8 -> 01FC */
+    assert(emulator->serial.bits_remaining == 8);
+    assert(emulator_step(emulator) == EMULATOR_OK);   /* 01FC -> 0200 */
+    assert(emulator->timer.divider == 0x0200);
+    assert(emulator->serial.bits_remaining == 7);
+    emulator_destroy(emulator);
+
+    emulator = load(&program);
+    Bus *bus = &emulator->bus;
+    bus_write(bus, APU_NR52_ADDRESS, 0x00);       /* sequencer at step 0 */
+    bus_write(bus, APU_NR52_ADDRESS, 0x80);
+    bus_write(bus, APU_NR22_ADDRESS, 0xF0);
+    bus_write(bus, APU_NR21_ADDRESS, 0x3F);       /* length 1 */
+    bus_write(bus, APU_NR24_ADDRESS, 0xC0);
+    emulator->timer.divider = 0x1FF8;
+    assert(emulator_step(emulator) == EMULATOR_OK);   /* 1FF8 -> 1FFC */
+    assert((bus_read(bus, APU_NR52_ADDRESS) & 0x02) != 0);
+    assert(emulator_step(emulator) == EMULATOR_OK);   /* 1FFC -> 2000 */
+    assert(emulator->timer.divider == 0x2000);
+    assert((bus_read(bus, APU_NR52_ADDRESS) & 0x02) == 0);
     emulator_destroy(emulator);
 }
 
@@ -469,7 +554,9 @@ int main(void)
     test_illegal_opcode_fault();
     test_serial_output_and_stop();
     test_serial_interrupt_end_to_end();
-    test_serial_div_write_edges();
+    test_div_write_clocks_serial();
+    test_div_write_clocks_the_apu();
+    test_counting_edges_arrive_in_their_m_cycle();
     test_status_strings();
 
     assert(remove(rom_path) == 0);

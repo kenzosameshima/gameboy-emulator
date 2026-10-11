@@ -256,10 +256,7 @@ static void expected_write(TestMachine *m, uint16_t a, uint8_t value)
     } else if (a == 0xFF01 || a == 0xFF02) {
         serial_write(&m->serial, a, value);
     } else if (a >= 0xFF04 && a <= 0xFF07) {
-        uint16_t before = m->timer.divider;
         timer_write(&m->timer, a, value);
-        /* Resetting DIV can clock the serial port. */
-        serial_divider_changed(&m->serial, before, m->timer.divider);
     } else if (a == 0xFF0F) {
         m->interrupts.interrupt_flag = (uint8_t)(value & 0x1F);
     } else if ((a >= 0xFF10 && a <= 0xFF26) || (a >= 0xFF30 && a <= 0xFF3F)) {
