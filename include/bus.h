@@ -27,27 +27,26 @@ typedef struct Bus {
 } Bus;
 
 /*
- * Implemented address map (see memory_map.h):
+ * The address map, in the order bus.c decodes it:
  * 0000-7FFF cartridge ROM; writes program the cartridge mapper
+ * 8000-9FFF video RAM
  * A000-BFFF cartridge RAM
  * C000-DFFF work RAM
- * E000-FDFF echo RAM
- * 8000-9FFF video RAM
+ * E000-FDFF echo of C000-DDFF
  * FE00-FE9F OAM
  * FF00      joypad (P1)
  * FF01-FF02 serial registers
  * FF04-FF07 timer registers
- * FF0F       interrupt flag (IF)
- * FF10-FF26 sound registers, FF30-FF3F wave RAM
- * FF40-FF45, FF47-FF4B LCD registers
+ * FF0F      interrupt flag (IF)
+ * FF10-FF26 sound registers
+ * FF30-FF3F wave RAM
+ * FF40-FF45 LCD registers
  * FF46      OAM DMA
+ * FF47-FF4B LCD registers
  * FF80-FFFE high RAM
- * FFFF       interrupt enable (IE)
- * All other addresses currently return 0xFF or ignore writes.
- *
-
- * The timer, serial port, PPU, DMA, joypad and APU are optional: without them
- * their addresses read 0xFF and ignore writes.
+ * FFFF      interrupt enable (IE)
+ * Everything else (FEA0-FEFF and the unused I/O addresses) reads 0xFF and
+ * ignores writes.
  *
  * While OAM DMA is copying, bus_read() and bus_write() cannot reach OAM or
  * the bus the DMA source is on (the external bus for ROM, cartridge RAM, work
@@ -56,19 +55,23 @@ typedef struct Bus {
  * The DMA itself reads through bus_dma_read().
  */
 
+/*
+ * Every device is required and must outlive the bus. The bus only keeps the
+ * pointers, so the devices may be initialised after it; the DMA, which keeps
+ * a pointer to the bus, usually is.
+ */
 void bus_init(
     Bus *bus,
     Cartridge *cartridge,
     Memory *memory,
-    InterruptRegisters *interrupts
+    InterruptRegisters *interrupts,
+    Timer *timer,
+    Serial *serial,
+    Ppu *ppu,
+    Dma *dma,
+    Joypad *joypad,
+    Apu *apu
 );
-
-void bus_attach_timer(Bus *bus, Timer *timer);
-void bus_attach_serial(Bus *bus, Serial *serial);
-void bus_attach_ppu(Bus *bus, Ppu *ppu);
-void bus_attach_dma(Bus *bus, Dma *dma);
-void bus_attach_joypad(Bus *bus, Joypad *joypad);
-void bus_attach_apu(Bus *bus, Apu *apu);
 
 uint8_t bus_read(Bus *bus, uint16_t address);
 void bus_write(Bus *bus, uint16_t address, uint8_t value);

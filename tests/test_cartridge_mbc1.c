@@ -179,37 +179,34 @@ static void test_ram_banking(void)
 
 static void test_bus_routes_mapper_and_ram(void)
 {
-    Cartridge cartridge;
-    Memory memory;
-    InterruptRegisters interrupts;
-    Bus bus;
+    TestMachine machine;
+    Bus *bus = &machine.bus;
 
     write_banked_rom(4, TYPE_MBC1_RAM_BATTERY, RAM_CODE_32K);
-    cartridge_init(&cartridge);
+    test_machine_init(&machine);
+    cartridge_destroy(&machine.cartridge);
+    cartridge_init(&machine.cartridge);
     assert(
-        cartridge_load(&cartridge, rom_path, NULL) == CARTRIDGE_LOAD_OK
+        cartridge_load(&machine.cartridge, rom_path, NULL) ==
+        CARTRIDGE_LOAD_OK
     );
 
-    memory_init(&memory);
-    interrupts_init(&interrupts);
-    bus_init(&bus, &cartridge, &memory, &interrupts);
-
     /* ROM writes reach the mapper... */
-    bus_write(&bus, 0x2000, 3);
-    assert(bus_read(&bus, 0x4000) == 3);
+    bus_write(bus, 0x2000, 3);
+    assert(bus_read(bus, 0x4000) == 3);
 
     /* ...and A000-BFFF reaches cartridge RAM once it is enabled. */
-    bus_write(&bus, 0xA123, 0x44);
-    assert(bus_read(&bus, 0xA123) == 0xFF);
+    bus_write(bus, 0xA123, 0x44);
+    assert(bus_read(bus, 0xA123) == 0xFF);
 
-    bus_write(&bus, 0x0000, 0x0A);
-    bus_write(&bus, 0xA123, 0x44);
-    assert(bus_read(&bus, 0xA123) == 0x44);
+    bus_write(bus, 0x0000, 0x0A);
+    bus_write(bus, 0xA123, 0x44);
+    assert(bus_read(bus, 0xA123) == 0x44);
 
     /* Cartridge RAM does not alias work RAM. */
-    assert(bus_read(&bus, 0xC123) == 0x00);
+    assert(bus_read(bus, 0xC123) == 0x00);
 
-    cartridge_destroy(&cartridge);
+    test_machine_destroy(&machine);
     remove(rom_path);
 }
 

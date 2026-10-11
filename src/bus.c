@@ -12,205 +12,217 @@
 #include <serial.h>
 #include <timer.h>
 
-static bool bus_is_timer_address(uint16_t address)
-{
-    return address >= TIMER_DIV_ADDRESS &&
-           address <= TIMER_TAC_ADDRESS;
-}
+/* The regions of the address map; see the table in bus.h. */
+typedef enum BusRegion {
+    BUS_REGION_ROM,
+    BUS_REGION_VRAM,
+    BUS_REGION_CART_RAM,
+    BUS_REGION_WRAM,
+    BUS_REGION_ECHO,
+    BUS_REGION_OAM,
+    BUS_REGION_JOYPAD,
+    BUS_REGION_SERIAL,
+    BUS_REGION_TIMER,
+    BUS_REGION_IF,
+    BUS_REGION_APU,
+    BUS_REGION_LCD,
+    BUS_REGION_DMA,
+    BUS_REGION_HRAM,
+    BUS_REGION_IE,
+    BUS_REGION_UNMAPPED
+} BusRegion;
 
-static bool bus_is_serial_address(uint16_t address)
+/*
+ * The only place that knows where each region starts and ends. Reads,
+ * writes and the OAM DMA's bus conflicts all switch on its answer.
+ */
+static BusRegion bus_decode(uint16_t address)
 {
-    return address == SERIAL_SB_ADDRESS ||
-           address == SERIAL_SC_ADDRESS;
-}
+    /* 0000-FE9F: each region starts where the one before it ends. */
+    if (address <= MEM_ROM_END) {
+        return BUS_REGION_ROM;
+    }
+    if (address <= PPU_VRAM_END) {
+        return BUS_REGION_VRAM;
+    }
+    if (address <= MEM_CART_RAM_END) {
+        return BUS_REGION_CART_RAM;
+    }
+    if (address <= MEM_WRAM_END) {
+        return BUS_REGION_WRAM;
+    }
+    if (address <= MEM_ECHO_END) {
+        return BUS_REGION_ECHO;
+    }
+    if (address <= PPU_OAM_END) {
+        return BUS_REGION_OAM;
+    }
 
-/* NR10-NR52 and wave RAM; the addresses between them are unused. */
-static bool bus_is_apu_address(uint16_t address)
-{
-    return (address >= APU_REGISTERS_START && address <= APU_REGISTERS_END) ||
-           (address >= APU_WAVE_RAM_START && address <= APU_WAVE_RAM_END);
-}
+    /* FEA0-FFFF: registers and high RAM, with unused gaps between. */
+    if (address == JOYPAD_ADDRESS) {
+        return BUS_REGION_JOYPAD;
+    }
+    if (address >= SERIAL_SB_ADDRESS && address <= SERIAL_SC_ADDRESS) {
+        return BUS_REGION_SERIAL;
+    }
+    if (address >= TIMER_DIV_ADDRESS && address <= TIMER_TAC_ADDRESS) {
+        return BUS_REGION_TIMER;
+    }
+    if (address == INTERRUPT_FLAG_ADDRESS) {
+        return BUS_REGION_IF;
+    }
+    if (address >= APU_REGISTERS_START && address <= APU_REGISTERS_END) {
+        return BUS_REGION_APU;
+    }
+    if (address >= APU_WAVE_RAM_START && address <= APU_WAVE_RAM_END) {
+        return BUS_REGION_APU;
+    }
+    if (address >= PPU_LCDC_ADDRESS && address <= PPU_LYC_ADDRESS) {
+        return BUS_REGION_LCD;
+    }
+    if (address == DMA_ADDRESS) {
+        return BUS_REGION_DMA;
+    }
+    if (address >= PPU_BGP_ADDRESS && address <= PPU_WX_ADDRESS) {
+        return BUS_REGION_LCD;
+    }
+    if (address >= MEM_HRAM_START && address <= MEM_HRAM_END) {
+        return BUS_REGION_HRAM;
+    }
+    if (address == INTERRUPT_ENABLE_ADDRESS) {
+        return BUS_REGION_IE;
+    }
 
-static bool bus_is_dma_address(uint16_t address)
-{
-    return address == DMA_ADDRESS;
-}
-
-static bool bus_is_joypad_address(uint16_t address)
-{
-    return address == JOYPAD_ADDRESS;
+    return BUS_REGION_UNMAPPED;
 }
 
 /*
  * While OAM DMA copies, the CPU shares a bus with it: OAM is always taken,
  * and so is the bus the source is on, the external bus (ROM, cartridge RAM,
- * work RAM, echo) or the video bus (VRAM). The I/O registers and HRAM are
- * free.
+ * work RAM, echo) or the video bus (VRAM).
  */
-static bool bus_blocked_by_dma(const Bus *bus, uint16_t address)
+static bool bus_blocked_by_dma(const Bus *bus, BusRegion region)
 {
-    if (bus->dma == NULL || !dma_is_copying(bus->dma)) {
+    if (!dma_is_copying(bus->dma)) {
         return false;
     }
 
-    if (address >= PPU_OAM_START && address <= PPU_OAM_END) {
-        return true;
+    switch (region) {
+        case BUS_REGION_OAM:
+            return true;
+
+        case BUS_REGION_VRAM:
+            return dma_source_is_vram(bus->dma);
+
+        case BUS_REGION_ROM:
+        case BUS_REGION_CART_RAM:
+        case BUS_REGION_WRAM:
+        case BUS_REGION_ECHO:
+            return !dma_source_is_vram(bus->dma);
+
+        case BUS_REGION_JOYPAD:
+        case BUS_REGION_SERIAL:
+        case BUS_REGION_TIMER:
+        case BUS_REGION_IF:
+        case BUS_REGION_APU:
+        case BUS_REGION_LCD:
+        case BUS_REGION_DMA:
+        case BUS_REGION_HRAM:
+        case BUS_REGION_IE:
+        case BUS_REGION_UNMAPPED:
+            break;
     }
 
-    if (address >= PPU_VRAM_START && address <= PPU_VRAM_END) {
-        return dma_source_is_vram(bus->dma);
-    }
-
-    bool external = address <= MEM_ROM_END ||
-                    (address >= MEM_CART_RAM_START && address <= MEM_ECHO_END);
-
-    return external && !dma_source_is_vram(bus->dma);
-}
-
-static bool bus_is_ppu_address(uint16_t address)
-{
-    return (address >= PPU_VRAM_START && address <= PPU_VRAM_END) ||
-           (address >= PPU_OAM_START && address <= PPU_OAM_END) ||
-           (address >= PPU_LCDC_ADDRESS && address <= PPU_LYC_ADDRESS) ||
-           (address >= PPU_BGP_ADDRESS && address <= PPU_WX_ADDRESS);
-}
-
-static bool bus_is_cartridge_ram_address(uint16_t address)
-{
-    return address >= MEM_CART_RAM_START &&
-           address <= MEM_CART_RAM_END;
-}
-
-static bool bus_is_wram_address(uint16_t address)
-{
-    return address >= MEM_WRAM_START && address <= MEM_WRAM_END;
-}
-
-static bool bus_is_echo_address(uint16_t address)
-{
-    return address >= MEM_ECHO_START && address <= MEM_ECHO_END;
-}
-
-static bool bus_is_hram_address(uint16_t address)
-{
-    return address >= MEM_HRAM_START && address <= MEM_HRAM_END;
+    /* The I/O registers and HRAM are free. */
+    return false;
 }
 
 void bus_init(
     Bus *bus,
     Cartridge *cartridge,
     Memory *memory,
-    InterruptRegisters *interrupts
+    InterruptRegisters *interrupts,
+    Timer *timer,
+    Serial *serial,
+    Ppu *ppu,
+    Dma *dma,
+    Joypad *joypad,
+    Apu *apu
 )
 {
     bus->cartridge = cartridge;
     bus->memory = memory;
     bus->interrupts = interrupts;
-    bus->timer = NULL;
-    bus->serial = NULL;
-    bus->ppu = NULL;
-    bus->dma = NULL;
-    bus->joypad = NULL;
-    bus->apu = NULL;
-}
-
-void bus_attach_timer(Bus *bus, Timer *timer)
-{
     bus->timer = timer;
-}
-
-void bus_attach_serial(Bus *bus, Serial *serial)
-{
     bus->serial = serial;
-}
-
-void bus_attach_ppu(Bus *bus, Ppu *ppu)
-{
     bus->ppu = ppu;
-}
-
-void bus_attach_apu(Bus *bus, Apu *apu)
-{
+    bus->dma = dma;
+    bus->joypad = joypad;
     bus->apu = apu;
 }
 
-void bus_attach_dma(Bus *bus, Dma *dma)
+static uint8_t bus_read_region(Bus *bus, BusRegion region, uint16_t address)
 {
-    bus->dma = dma;
-}
+    switch (region) {
+        case BUS_REGION_ROM:
+            return cartridge_read(bus->cartridge, address);
 
-void bus_attach_joypad(Bus *bus, Joypad *joypad)
-{
-    bus->joypad = joypad;
-}
+        case BUS_REGION_CART_RAM:
+            return cartridge_read_ram(bus->cartridge, address);
 
-static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
-{
-    if (address <= MEM_ROM_END) {
-        return cartridge_read(bus->cartridge, address);
+        case BUS_REGION_WRAM:
+        case BUS_REGION_HRAM:
+            return memory_read(bus->memory, address);
+
+        case BUS_REGION_ECHO:
+            return memory_read(
+                bus->memory,
+                (uint16_t)(address - MEM_ECHO_OFFSET)
+            );
+
+        case BUS_REGION_VRAM:
+        case BUS_REGION_OAM:
+        case BUS_REGION_LCD:
+            return ppu_read(bus->ppu, address);
+
+        case BUS_REGION_APU:
+            return apu_read(bus->apu, address);
+
+        case BUS_REGION_JOYPAD:
+            return joypad_read(bus->joypad);
+
+        case BUS_REGION_DMA:
+            return dma_read(bus->dma);
+
+        case BUS_REGION_SERIAL:
+            return serial_read(bus->serial, address);
+
+        case BUS_REGION_TIMER:
+            return timer_read(bus->timer, address);
+
+        case BUS_REGION_IF:
+            /* The upper three bits of IF read as 1. */
+            return (uint8_t)(bus->interrupts->interrupt_flag | 0xE0);
+
+        case BUS_REGION_IE:
+            return bus->interrupts->interrupt_enable;
+
+        case BUS_REGION_UNMAPPED:
+            break;
     }
 
-    if (bus_is_cartridge_ram_address(address)) {
-        return cartridge_read_ram(bus->cartridge, address);
-    }
-
-    if (bus_is_wram_address(address) || bus_is_hram_address(address)) {
-        return memory_read(bus->memory, address);
-    }
-
-    if (bus_is_echo_address(address)) {
-        return memory_read(
-            bus->memory,
-            (uint16_t)(address - MEM_ECHO_OFFSET)
-        );
-    }
-
-    if (bus_is_ppu_address(address)) {
-        return bus->ppu == NULL ? 0xFF : ppu_read(bus->ppu, address);
-    }
-
-    if (bus_is_apu_address(address)) {
-        return bus->apu == NULL ? 0xFF : apu_read(bus->apu, address);
-    }
-
-    if (bus_is_joypad_address(address)) {
-        return bus->joypad == NULL ? 0xFF : joypad_read(bus->joypad);
-    }
-
-    if (bus_is_dma_address(address)) {
-        return bus->dma == NULL ? 0xFF : dma_read(bus->dma);
-    }
-
-    if (bus_is_serial_address(address)) {
-        return bus->serial == NULL ? 0xFF : serial_read(bus->serial, address);
-    }
-
-    if (bus_is_timer_address(address)) {
-        return bus->timer == NULL ? 0xFF : timer_read(bus->timer, address);
-    }
-
-    if (address == INTERRUPT_FLAG_ADDRESS) {
-        /* The upper three bits of IF read as 1. */
-        return (uint8_t)(bus->interrupts->interrupt_flag | 0xE0);
-    }
-
-    if (address == INTERRUPT_ENABLE_ADDRESS) {
-        return bus->interrupts->interrupt_enable;
-    }
-
-    /*
-     * Unimplemented memory region.
-     */
     return 0xFF;
 }
 
 uint8_t bus_read(Bus *bus, uint16_t address)
 {
-    if (bus_blocked_by_dma(bus, address)) {
+    BusRegion region = bus_decode(address);
+
+    if (bus_blocked_by_dma(bus, region)) {
         return 0xFF;
     }
 
-    return bus_read_unlocked(bus, address);
+    return bus_read_region(bus, region, address);
 }
 
 uint8_t bus_dma_read(Bus *bus, uint16_t address)
@@ -219,93 +231,85 @@ uint8_t bus_dma_read(Bus *bus, uint16_t address)
         address = (uint16_t)(address - MEM_ECHO_OFFSET);
     }
 
-    return bus_read_unlocked(bus, address);
+    return bus_read_region(bus, bus_decode(address), address);
 }
 
 void bus_write(Bus *bus, uint16_t address, uint8_t value)
 {
-    if (bus_blocked_by_dma(bus, address)) {
+    BusRegion region = bus_decode(address);
+
+    if (bus_blocked_by_dma(bus, region)) {
         return;
     }
 
-    if (address <= MEM_ROM_END) {
-        cartridge_write(bus->cartridge, address, value);
-        return;
-    }
+    switch (region) {
+        case BUS_REGION_ROM:
+            cartridge_write(bus->cartridge, address, value);
+            break;
 
-    if (bus_is_cartridge_ram_address(address)) {
-        cartridge_write_ram(bus->cartridge, address, value);
-        return;
-    }
+        case BUS_REGION_CART_RAM:
+            cartridge_write_ram(bus->cartridge, address, value);
+            break;
 
-    if (bus_is_wram_address(address) || bus_is_hram_address(address)) {
-        memory_write(bus->memory, address, value);
-        return;
-    }
+        case BUS_REGION_WRAM:
+        case BUS_REGION_HRAM:
+            memory_write(bus->memory, address, value);
+            break;
 
-    if (bus_is_echo_address(address)) {
-        memory_write(
-            bus->memory,
-            (uint16_t)(address - MEM_ECHO_OFFSET),
-            value
-        );
-        return;
-    }
+        case BUS_REGION_ECHO:
+            memory_write(
+                bus->memory,
+                (uint16_t)(address - MEM_ECHO_OFFSET),
+                value
+            );
+            break;
 
-    if (bus_is_ppu_address(address)) {
-        if (bus->ppu != NULL) {
+        case BUS_REGION_VRAM:
+        case BUS_REGION_OAM:
+        case BUS_REGION_LCD:
             ppu_write(bus->ppu, address, value);
-        }
-        return;
-    }
+            break;
 
-    if (bus_is_joypad_address(address)) {
-        if (bus->joypad != NULL) {
+        case BUS_REGION_JOYPAD:
             joypad_write(bus->joypad, value);
-        }
-        return;
-    }
+            break;
 
-    if (bus_is_apu_address(address)) {
-        if (bus->apu != NULL) {
+        case BUS_REGION_APU:
             apu_write(bus->apu, address, value);
-        }
-        return;
-    }
+            break;
 
-    if (bus_is_dma_address(address)) {
-        if (bus->dma != NULL) {
+        case BUS_REGION_DMA:
             dma_write(bus->dma, value);
-        }
-        return;
-    }
+            break;
 
-    if (bus_is_serial_address(address)) {
-        if (bus->serial != NULL) {
+        case BUS_REGION_SERIAL:
             serial_write(bus->serial, address, value);
-        }
-        return;
-    }
+            break;
 
-    if (bus_is_timer_address(address)) {
-        if (bus->timer != NULL) {
+        case BUS_REGION_TIMER: {
             uint16_t before = bus->timer->divider;
             timer_write(bus->timer, address, value);
-            if (address == TIMER_DIV_ADDRESS && bus->serial != NULL) {
-                serial_divider_changed(bus->serial, before, bus->timer->divider);
+            if (address == TIMER_DIV_ADDRESS) {
+                serial_divider_changed(
+                    bus->serial,
+                    before,
+                    bus->timer->divider
+                );
             }
+            break;
         }
-        return;
-    }
 
-    if (address == INTERRUPT_FLAG_ADDRESS) {
-        bus->interrupts->interrupt_flag =
-            (uint8_t)(value & INTERRUPT_VALID_MASK);
-        return;
-    }
+        case BUS_REGION_IF:
+            bus->interrupts->interrupt_flag =
+                (uint8_t)(value & INTERRUPT_VALID_MASK);
+            break;
 
-    if (address == INTERRUPT_ENABLE_ADDRESS) {
-        /* IE keeps all 8 bits, though only the low five are sources. */
-        bus->interrupts->interrupt_enable = value;
+        case BUS_REGION_IE:
+            /* IE keeps all 8 bits, though only the low five are sources. */
+            bus->interrupts->interrupt_enable = value;
+            break;
+
+        case BUS_REGION_UNMAPPED:
+            break;
     }
 }

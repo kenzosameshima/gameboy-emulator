@@ -7,11 +7,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <apu.h>
 #include <bus.h>
 #include <cartridge.h>
 #include <cpu.h>
+#include <dma.h>
 #include <interrupts.h>
+#include <joypad.h>
 #include <memory.h>
+#include <ppu.h>
+#include <serial.h>
 #include <timer.h>
 
 static inline void test_write_file(
@@ -28,15 +33,20 @@ static inline void test_write_file(
 }
 
 /*
- * A CPU wired to a Bus, 32 KiB of ROM, memory, a Timer and the interrupt
- * registers, with a tick handler that counts the time the CPU consumes and
- * advances the Timer, as the Emulator does.
+ * A CPU wired to a Bus with 32 KiB of ROM and every device on it. The tick
+ * handler counts the time the CPU consumes and advances only the Timer: the
+ * other devices answer on the bus but stand still unless a test steps them.
  */
 typedef struct TestMachine {
     Cartridge cartridge;
     Memory memory;
     InterruptRegisters interrupts;
     Timer timer;
+    Serial serial;
+    Ppu ppu;
+    Dma dma;
+    Joypad joypad;
+    Apu apu;
     Bus bus;
     CPU cpu;
 
@@ -76,14 +86,24 @@ static inline void test_machine_init(TestMachine *machine)
     memory_init(&machine->memory);
     interrupts_init(&machine->interrupts);
     timer_init(&machine->timer, &machine->interrupts);
+    serial_init(&machine->serial, &machine->interrupts);
+    ppu_init(&machine->ppu, &machine->interrupts);
+    joypad_init(&machine->joypad, &machine->interrupts);
+    apu_init(&machine->apu);
 
     bus_init(
         &machine->bus,
         &machine->cartridge,
         &machine->memory,
-        &machine->interrupts
+        &machine->interrupts,
+        &machine->timer,
+        &machine->serial,
+        &machine->ppu,
+        &machine->dma,
+        &machine->joypad,
+        &machine->apu
     );
-    bus_attach_timer(&machine->bus, &machine->timer);
+    dma_init(&machine->dma, &machine->bus, &machine->ppu);
 
     test_machine_reset_cpu(machine);
 }

@@ -79,14 +79,14 @@ Emulator *emulator_create(void)
         &emulator->bus,
         &emulator->cartridge,
         &emulator->memory,
-        &emulator->interrupts
+        &emulator->interrupts,
+        &emulator->timer,
+        &emulator->serial,
+        &emulator->ppu,
+        &emulator->dma,
+        &emulator->joypad,
+        &emulator->apu
     );
-    bus_attach_timer(&emulator->bus, &emulator->timer);
-    bus_attach_serial(&emulator->bus, &emulator->serial);
-    bus_attach_ppu(&emulator->bus, &emulator->ppu);
-    bus_attach_dma(&emulator->bus, &emulator->dma);
-    bus_attach_joypad(&emulator->bus, &emulator->joypad);
-    bus_attach_apu(&emulator->bus, &emulator->apu);
 
     emulator_reset(emulator);
 

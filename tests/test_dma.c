@@ -9,40 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <bus.h>
-#include <cartridge.h>
-#include <dma.h>
-#include <interrupts.h>
-#include <memory.h>
-#include <ppu.h>
+#include "test_util.h"
 
-typedef struct Machine {
-    Cartridge cartridge;
-    Memory memory;
-    InterruptRegisters interrupts;
-    Ppu ppu;
-    Dma dma;
-    Bus bus;
-} Machine;
-
-static void machine_init(Machine *m)
+static void machine_init(TestMachine *m)
 {
-    cartridge_init(&m->cartridge);
-    m->cartridge.rom_size = 0x8000;
-    m->cartridge.rom = calloc(m->cartridge.rom_size, 1);
-    assert(m->cartridge.rom != NULL);
+    test_machine_init(m);
 
     for (unsigned i = 0; i < 0x100; i++) {
         m->cartridge.rom[i] = (uint8_t)(0x40 + i);
     }
-
-    memory_init(&m->memory);
-    interrupts_init(&m->interrupts);
-    ppu_init(&m->ppu, &m->interrupts);
-    bus_init(&m->bus, &m->cartridge, &m->memory, &m->interrupts);
-    bus_attach_ppu(&m->bus, &m->ppu);
-    dma_init(&m->dma, &m->bus, &m->ppu);
-    bus_attach_dma(&m->bus, &m->dma);
 
     /* Work RAM page C0: byte i holds 3 * i + 1. */
     for (unsigned i = 0; i < 0x100; i++) {
@@ -51,12 +26,7 @@ static void machine_init(Machine *m)
     }
 }
 
-static void machine_destroy(Machine *m)
-{
-    cartridge_destroy(&m->cartridge);
-}
-
-static void m_cycles(Machine *m, unsigned count)
+static void m_cycles(TestMachine *m, unsigned count)
 {
     for (unsigned i = 0; i < count; i++) {
         dma_step(&m->dma, 4);
@@ -65,7 +35,7 @@ static void m_cycles(Machine *m, unsigned count)
 
 static void test_copies_one_byte_per_m_cycle(void)
 {
-    Machine m;
+    TestMachine m;
 
     machine_init(&m);
     assert(!dma_is_copying(&m.dma));
@@ -112,24 +82,24 @@ static void test_copies_one_byte_per_m_cycle(void)
     m_cycles(&m, 10);
     assert(m.ppu.oam[0] == 0x99);
 
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 static void test_register_reads_back(void)
 {
-    Machine m;
+    TestMachine m;
 
     machine_init(&m);
     bus_write(&m.bus, DMA_ADDRESS, 0xC1);
     assert(bus_read(&m.bus, DMA_ADDRESS) == 0xC1);
     assert(dma_read(&m.dma) == 0xC1);
 
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 static void test_the_cpu_bus_is_taken(void)
 {
-    Machine m;
+    TestMachine m;
 
     machine_init(&m);
     bus_write(&m.bus, 0xFF80, 0x77);
@@ -170,12 +140,12 @@ static void test_the_cpu_bus_is_taken(void)
     assert(bus_read(&m.bus, 0xC000) == 1);
     assert(bus_read(&m.bus, 0x0000) == 0x40);
 
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 static void test_sources(void)
 {
-    Machine m;
+    TestMachine m;
 
     /* ROM. */
     machine_init(&m);
@@ -184,7 +154,7 @@ static void test_sources(void)
     for (unsigned i = 0; i < 160; i++) {
         assert(m.ppu.oam[i] == (uint8_t)(0x40 + i));
     }
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 
     /* VRAM, even though the CPU could not read it right now. */
     machine_init(&m);
@@ -196,7 +166,7 @@ static void test_sources(void)
     for (unsigned i = 0; i < 160; i++) {
         assert(m.ppu.oam[i] == (uint8_t)(0xA0 + i));
     }
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 
     /* Pages E0 and up read the work RAM mirror: E0 is C0, FE is DE. */
     machine_init(&m);
@@ -204,7 +174,7 @@ static void test_sources(void)
     m_cycles(&m, 162);
     assert(m.ppu.oam[0] == 1);
     assert(m.ppu.oam[159] == (uint8_t)(3 * 159 + 1));
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 
     machine_init(&m);
     for (unsigned i = 0; i < 160; i++) {
@@ -215,12 +185,12 @@ static void test_sources(void)
     for (unsigned i = 0; i < 160; i++) {
         assert(m.ppu.oam[i] == (uint8_t)(0x10 + i));
     }
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 static void test_restart(void)
 {
-    Machine m;
+    TestMachine m;
 
     machine_init(&m);
     bus_write(&m.bus, DMA_ADDRESS, 0xC0);
@@ -250,7 +220,7 @@ static void test_restart(void)
         assert(m.ppu.oam[i] == (uint8_t)(0xFF - i));
     }
 
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 /*
@@ -261,7 +231,7 @@ static void test_restart(void)
  */
 static void test_vram_source_blocks_only_vram(void)
 {
-    Machine m;
+    TestMachine m;
 
     machine_init(&m);
     m.ppu.vram[0x20] = 0x3D;
@@ -284,7 +254,7 @@ static void test_vram_source_blocks_only_vram(void)
     assert(bus_read(&m.bus, 0xC201) == 0x98);
     assert(bus_read(&m.bus, 0x8020) == 0x3D);
 
-    machine_destroy(&m);
+    test_machine_destroy(&m);
 }
 
 int main(void)
