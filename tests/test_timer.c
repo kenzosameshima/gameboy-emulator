@@ -226,6 +226,108 @@ static void test_timer_during_halt_and_pending_if(void)
     test_machine_destroy(&machine);
 }
 
+/* ---- Falling edges of the system counter ---- */
+
+/* A timer whose counter starts at `divider`, with no edges pending. */
+static void edge_timer(
+    Timer *timer,
+    InterruptRegisters *interrupts,
+    uint16_t divider
+)
+{
+    interrupts_init(interrupts);
+    timer_init(timer, interrupts);
+    timer->divider = divider;
+}
+
+static void test_counting_records_falls(void)
+{
+    Timer timer;
+    InterruptRegisters interrupts;
+
+    /* 01FE to 0202: 01FF -> 0200 drops bits 0-8 and 0201 -> 0202 drops bit
+     * 0 again. Bits that rise, like bit 9, are not recorded. */
+    edge_timer(&timer, &interrupts, 0x01FE);
+    timer_step(&timer, 4);
+    assert(timer_take_falling_edges(&timer) == 0x01FF);
+
+    /* A step in which no bit falls records nothing. */
+    edge_timer(&timer, &interrupts, 0x0000);
+    timer_step(&timer, 1);
+    assert(timer_take_falling_edges(&timer) == 0);
+}
+
+static void test_div_write_records_falls(void)
+{
+    Timer timer;
+    InterruptRegisters interrupts;
+
+    /* Resetting the counter drops every bit that was set. */
+    edge_timer(&timer, &interrupts, 0x1234);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0xFF);
+    assert(timer_take_falling_edges(&timer) == 0x1234);
+
+    /* Writing DIV while it is already 0 drops nothing. */
+    edge_timer(&timer, &interrupts, 0x0000);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    assert(timer_take_falling_edges(&timer) == 0);
+}
+
+/* The set records whether a bit fell, not how often. */
+static void test_repeated_falls_are_coalesced(void)
+{
+    Timer timer;
+    InterruptRegisters interrupts;
+
+    /* An M-cycle with a DIV write before its four increments: the write
+     * drops bit 8, then counting 0 -> 4 drops bit 0 twice and bit 1 once. */
+    edge_timer(&timer, &interrupts, 0x0100);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    timer_step(&timer, 4);
+    assert(timer_take_falling_edges(&timer) == 0x0103);
+
+    /* Over 1024 cycles bit 8 falls twice and is recorded once. */
+    edge_timer(&timer, &interrupts, 0x0000);
+    timer_step(&timer, 1024);
+    assert(timer_take_falling_edges(&timer) == 0x03FF);
+}
+
+static void test_counter_wrap_drops_every_bit(void)
+{
+    Timer timer;
+    InterruptRegisters interrupts;
+
+    edge_timer(&timer, &interrupts, 0xFFFE);
+    timer_step(&timer, 4);
+    assert(timer.divider == 0x0002);
+    assert(timer_take_falling_edges(&timer) == 0xFFFF);
+}
+
+/* Each check starts from a set that is not empty. */
+static void test_take_and_resets_clear_the_set(void)
+{
+    Timer timer;
+    InterruptRegisters interrupts;
+
+    edge_timer(&timer, &interrupts, 0x8001);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    assert(timer_take_falling_edges(&timer) == 0x8001);
+    assert(timer_take_falling_edges(&timer) == 0);
+
+    edge_timer(&timer, &interrupts, 0x8001);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    assert(timer.falling_edges == 0x8001);
+    timer_init(&timer, &interrupts);
+    assert(timer_take_falling_edges(&timer) == 0);
+
+    edge_timer(&timer, &interrupts, 0x8001);
+    timer_write(&timer, TIMER_DIV_ADDRESS, 0);
+    assert(timer.falling_edges == 0x8001);
+    timer_power_on(&timer);
+    assert(timer.divider == 0xABCC);
+    assert(timer_take_falling_edges(&timer) == 0);
+}
+
 int main(void)
 {
     test_registers();
@@ -235,6 +337,11 @@ int main(void)
     test_reload_window_writes_and_repeated_overflow();
     test_div_and_tac_edges();
     test_timer_during_halt_and_pending_if();
+    test_counting_records_falls();
+    test_div_write_records_falls();
+    test_repeated_falls_are_coalesced();
+    test_counter_wrap_drops_every_bit();
+    test_take_and_resets_clear_the_set();
 
     printf("Timer tests passed!\n");
     return 0;

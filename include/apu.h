@@ -63,7 +63,6 @@ typedef struct Apu {
     uint8_t wave_ram[APU_WAVE_RAM_SIZE];
 
     bool powered;
-    uint16_t divider;           /* the system counter at the last step */
     uint8_t frame_step;        /* the step the next frame sequencer tick runs */
 
     ApuChannel channel[4];
@@ -87,7 +86,8 @@ typedef struct Apu {
  *
  * Time comes from apu_step() in T-cycles. The frame sequencer is clocked by
  * the falling edge of bit 12 of the system counter (the timer's divider), so
- * apu_step() is given the divider after the step, as serial_step() is.
+ * apu_step() is also given the counter bits that fell during the step (see
+ * timer_take_falling_edges()), as serial_step() is.
  *
  * Registers read with their unused bits set, as on hardware. While the APU
  * is off (NR52 bit 7 clear) the registers are cleared and writes to them are
@@ -106,7 +106,7 @@ void apu_init(Apu *apu);
 uint8_t apu_read(const Apu *apu, uint16_t address);
 void apu_write(Apu *apu, uint16_t address, uint8_t value);
 
-void apu_step(Apu *apu, CpuCycles cycles, uint16_t divider);
+void apu_step(Apu *apu, CpuCycles cycles, CounterEdges fell);
 
 /*
  * Audio output. With a sample rate set, the mixer produces one stereo frame

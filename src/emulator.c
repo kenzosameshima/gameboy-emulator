@@ -14,9 +14,12 @@ static void emulator_tick(void *context, CpuCycles cycles)
 
     emulator->cycles += cycles;
 
+    /* The counter bits that fell this M-cycle, by counting or by a DIV write
+     * the CPU made just before the tick, clock serial and the APU. */
     timer_step(&emulator->timer, cycles);
-    serial_step(&emulator->serial, cycles, emulator->timer.divider);
-    apu_step(&emulator->apu, cycles, emulator->timer.divider);
+    CounterEdges fell = timer_take_falling_edges(&emulator->timer);
+    serial_step(&emulator->serial, fell);
+    apu_step(&emulator->apu, cycles, fell);
     dma_step(&emulator->dma, cycles);
     ppu_step(&emulator->ppu, cycles);
     cartridge_step(&emulator->cartridge, cycles);

@@ -4,6 +4,7 @@
 
 #include <interrupts.h>
 #include <serial.h>
+#include <timer.h>
 
 typedef struct Capture {
     uint8_t bytes[16];
@@ -18,14 +19,24 @@ static void capture_byte(void *context, uint8_t byte)
     capture->bytes[capture->count++] = byte;
 }
 
-/* The system counter the serial clock is divided from; the Emulator passes
- * the timer's divider after each M-cycle. These tests drive it themselves. */
-static uint16_t divider;
+/* The serial clock is divided from the system counter. As the Emulator
+ * does, each M-cycle steps a real Timer and hands serial the counter bits
+ * that fell. Tests choose the counter's phase with counter_at(). */
+static Timer timer;
+static InterruptRegisters timer_interrupts;
+
+/* Setup only: a counter at `divider` with no edges pending. */
+static void counter_at(uint16_t divider)
+{
+    interrupts_init(&timer_interrupts);
+    timer_init(&timer, &timer_interrupts);
+    timer.divider = divider;
+}
 
 static void step_one(Serial *serial)
 {
-    divider = (uint16_t)(divider + 4);
-    serial_step(serial, 4, divider);
+    timer_step(&timer, 4);
+    serial_step(serial, timer_take_falling_edges(&timer));
 }
 
 static void step_cycles(Serial *serial, unsigned cycles)
@@ -42,7 +53,7 @@ static void test_registers(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
-    divider = 0;
+    counter_at(0);
 
     assert(serial_read(&serial, SERIAL_SB_ADDRESS) == 0x00);
     /* Only bits 7 and 0 of SC are implemented; the rest read as 1. */
@@ -65,7 +76,7 @@ static void test_transfer_with_internal_clock(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
-    divider = 0;
+    counter_at(0);
     serial_set_output(&serial, capture_byte, &capture);
 
     serial_write(&serial, SERIAL_SB_ADDRESS, 'A');
@@ -110,7 +121,7 @@ static unsigned cycles_to_complete(uint16_t start_divider)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
-    divider = start_divider;
+    counter_at(start_divider);
     serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
 
     unsigned cycles = 0;
@@ -155,7 +166,7 @@ static void test_restart_and_external_clock(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
-    divider = 0;
+    counter_at(0);
     serial_set_output(&serial, capture_byte, &capture);
 
     /* Back-to-back writes each report their byte, as a game printing text. */
@@ -197,7 +208,7 @@ static void test_reset_keeps_output(void)
 
     interrupts_init(&interrupts);
     serial_init(&serial, &interrupts);
-    divider = 0;
+    counter_at(0);
     serial_set_output(&serial, capture_byte, &capture);
 
     serial_write(&serial, SERIAL_SB_ADDRESS, 'Z');
@@ -218,9 +229,34 @@ static void test_reset_keeps_output(void)
     assert(capture.bytes[1] == 'Y');
 }
 
+/* Only a fall of counter bit 8 shifts a bit; falls of the others do not. */
+static void test_only_counter_bit_8_clocks_the_transfer(void)
+{
+    InterruptRegisters interrupts;
+    Serial serial;
+
+    interrupts_init(&interrupts);
+    serial_init(&serial, &interrupts);
+    serial_write(&serial, SERIAL_SC_ADDRESS, 0x81);
+
+    for (unsigned i = 0; i < 2 * SERIAL_BITS; i++) {
+        serial_step(&serial, (CounterEdges)~0x0100);
+    }
+    assert(interrupts.interrupt_flag == 0);
+    assert(serial_read(&serial, SERIAL_SC_ADDRESS) == 0xFF);
+
+    for (unsigned i = 0; i < SERIAL_BITS - 1; i++) {
+        serial_step(&serial, 0x0100);
+    }
+    assert(interrupts.interrupt_flag == 0);
+    serial_step(&serial, 0x0100);
+    assert(interrupts.interrupt_flag == INTERRUPT_SERIAL);
+}
+
 int main(void)
 {
     test_registers();
+    test_only_counter_bit_8_clocks_the_transfer();
     test_transfer_with_internal_clock();
     test_transfer_aligns_to_the_system_counter();
     test_restart_and_external_clock();

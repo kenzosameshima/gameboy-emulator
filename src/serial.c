@@ -2,6 +2,11 @@
 
 #include <serial.h>
 
+enum {
+    /* The internal clock shifts on each fall of this system counter bit. */
+    SERIAL_CLOCK_BIT = 0x0100
+};
+
 void serial_reset(Serial *serial)
 {
     serial->sb = 0;
@@ -67,29 +72,20 @@ void serial_write(Serial *serial, uint16_t address, uint8_t value)
     }
 }
 
-/* Both elapsed cycles and DIV writes can lower the serial clock. */
-void serial_divider_changed(Serial *serial, uint16_t before, uint16_t after)
+void serial_step(Serial *serial, CounterEdges fell)
 {
-    if (!serial->transferring || (before & ~after & 0x100) == 0) {
+    if (!serial->transferring || (fell & SERIAL_CLOCK_BIT) == 0) {
         return;
     }
+
     serial->bits_remaining--;
+
     if (serial->bits_remaining != 0) {
         return;
     }
+
     serial->transferring = false;
     serial->sb = 0xFF;
     serial->sc = (uint8_t)(serial->sc & ~SERIAL_SC_START);
     interrupts_request(serial->interrupts, INTERRUPT_SERIAL);
-}
-
-void serial_step(Serial *serial, CpuCycles cycles, uint16_t divider)
-{
-    /* Inspect every transition, including counter wrap and larger steps. */
-    uint16_t before = (uint16_t)(divider - cycles);
-    for (CpuCycles i = 0; i < cycles && serial->transferring; i++) {
-        uint16_t after = (uint16_t)(before + 1);
-        serial_divider_changed(serial, before, after);
-        before = after;
-    }
 }

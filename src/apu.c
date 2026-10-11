@@ -739,12 +739,9 @@ void apu_write(Apu *apu, uint16_t address, uint8_t value)
 
 /* ---- Time ---- */
 
-void apu_step(Apu *apu, CpuCycles cycles, uint16_t divider)
+void apu_step(Apu *apu, CpuCycles cycles, CounterEdges fell)
 {
-    bool tick = (apu->divider & FRAME_SEQUENCER_BIT) != 0 &&
-                (divider & FRAME_SEQUENCER_BIT) == 0;
-
-    apu->divider = divider;
+    bool tick = (fell & FRAME_SEQUENCER_BIT) != 0;
 
     /* A timer that runs out at the end of the step changes the output for
      * the next one, so the step is mixed from the state it started in. */
