@@ -44,6 +44,65 @@ static Emulator *load(const Program *program)
     return emulator;
 }
 
+/* Keep the three picture consumers on the tested frame timing interface. */
+static void test_frame_callers(void)
+{
+    const char *paths[] = {
+        "frontend/sdl_main.c", "tools/frame_dump.c", "tests/test_acid2.c"
+    };
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        FILE *file = fopen(paths[i], "r");
+        assert(file != NULL);
+        char source[32768];
+        size_t size = fread(source, 1, sizeof(source) - 1, file);
+        assert(!ferror(file) && feof(file));
+        source[size] = '\0';
+        assert(fclose(file) == 0);
+        assert(strstr(source, "emulator_run_frame(emulator)") != NULL);
+        assert(strstr(source, "emulator_run_cycles(") == NULL);
+    }
+}
+
+static void test_frame_timing(void)
+{
+    Program program = {0};
+    const uint8_t spin[] = { 0x18, 0xFE };
+    place(&program, 0x0100, spin, sizeof(spin));
+    Emulator *emulator = load(&program);
+
+    /* Start partway through a visible frame, as every caller can. */
+    assert(emulator_run_cycles(emulator, 12348) == EMULATOR_OK);
+    for (unsigned i = 0; i < 6; i++) {
+        uint64_t frame = emulator_frame_count(emulator);
+        uint64_t before = emulator_cycles(emulator);
+        assert(emulator_run_frame(emulator) == EMULATOR_OK);
+        assert(emulator_frame_count(emulator) == frame + 1);
+        assert(emulator->ppu.mode == PPU_MODE_VBLANK);
+        assert(emulator->ppu.ly == 144);
+        assert(emulator->ppu.line_dot < 12);
+        if (i != 0) {
+            assert(emulator_cycles(emulator) - before == 70224);
+        }
+    }
+    bus_write(&emulator->bus, PPU_LCDC_ADDRESS, 0);
+    uint64_t before = emulator_cycles(emulator);
+    uint64_t frame = emulator_frame_count(emulator);
+    assert(emulator_run_frame(emulator) == EMULATOR_OK);
+    assert(emulator_cycles(emulator) - before == 70224);
+    assert(emulator_frame_count(emulator) == frame);
+    emulator_stop(emulator);
+    before = emulator_cycles(emulator);
+    assert(emulator_run_frame(emulator) == EMULATOR_OK);
+    assert(emulator_cycles(emulator) == before);
+    assert(!emulator_is_running(emulator));
+    emulator_destroy(emulator);
+    assert(emulator_run_frame(NULL) == EMULATOR_ERROR_INVALID_ARGUMENT);
+    emulator = emulator_create();
+    assert(emulator != NULL);
+    assert(emulator_run_frame(emulator) == EMULATOR_ERROR_NO_ROM);
+    emulator_destroy(emulator);
+}
+
 static void test_cycle_budget(void)
 {
     Program program = {0};
@@ -399,6 +458,8 @@ static void test_status_strings(void)
 
 int main(void)
 {
+    test_frame_callers();
+    test_frame_timing();
     test_cycle_budget();
     test_stop_before_run_is_not_lost();
     test_run_with_invalid_state();

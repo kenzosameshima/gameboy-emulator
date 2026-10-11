@@ -25,7 +25,6 @@
 enum {
     DEFAULT_FRAMES = 60,
     DEFAULT_SCALE = 3,
-    CYCLES_PER_SLICE = 4560,    /* ten lines, so input lands on frame edges */
     MAX_PRESSES = 32,
     STORED_BLOCK_MAX = 65535
 };
@@ -333,7 +332,7 @@ int main(int argc, char **argv)
             applied_frame = frame;
         }
 
-        status = emulator_run_cycles(emulator, CYCLES_PER_SLICE);
+        status = emulator_run_frame(emulator);
     }
 
     /* A CPU that stopped for good just leaves the picture as it is. */
