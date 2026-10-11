@@ -42,6 +42,7 @@ enum {
     SAVE_INTERVAL_MS = 30000,
     SAVE_PATH_CAPACITY = 1024,
 
+    AUDIO_WAIT_TIMEOUT_MS = 250,
     AUDIO_RATE = 48000,
     AUDIO_BUFFER_FRAMES = 1024,     /* SDL's device buffer */
     AUDIO_CHUNK_FRAMES = 2048,      /* taken from the emulator per video frame */
@@ -268,6 +269,7 @@ static void audio_close(Audio *audio)
     if (audio->device != 0) {
         SDL_CloseAudioDevice(audio->device);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        audio->device = 0;
     }
 }
 
@@ -287,7 +289,7 @@ static int16_t high_pass(float *capacitor, int16_t sample)
 }
 
 /* Sends what the machine has produced since the last call to the speakers. */
-static void audio_queue(Audio *audio, Emulator *emulator)
+static bool audio_queue(Audio *audio, Emulator *emulator)
 {
     static int16_t chunk[2 * AUDIO_CHUNK_FRAMES];
     size_t frames = emulator_take_audio(emulator, chunk, AUDIO_CHUNK_FRAMES);
@@ -301,17 +303,25 @@ static void audio_queue(Audio *audio, Emulator *emulator)
     if (SDL_QueueAudio(audio->device, chunk,
                        (uint32_t)(frames * AUDIO_FRAME_BYTES)) != 0) {
         fprintf(stderr, "Could not queue sound: %s\n", SDL_GetError());
+        return false;
     }
+    return true;
 }
 
 /* Waits until the speakers have played the queue down to the latency
  * target. This is what keeps the machine at the real speed. */
-static void audio_wait(const Audio *audio)
+static bool audio_wait(const Audio *audio)
 {
+    uint32_t start = SDL_GetTicks();
     while (SDL_GetQueuedAudioSize(audio->device) >
            AUDIO_LATENCY_FRAMES * AUDIO_FRAME_BYTES) {
+        if (SDL_GetAudioDeviceStatus(audio->device) != SDL_AUDIO_PLAYING ||
+            SDL_GetTicks() - start >= AUDIO_WAIT_TIMEOUT_MS) {
+            return false;
+        }
         SDL_Delay(1);
     }
+    return true;
 }
 
 static int run(
@@ -429,8 +439,9 @@ static int run(
             last_save = SDL_GetTicks();
         }
 
-        if (audio->device != 0) {
-            audio_queue(audio, emulator);
+        if (audio->device != 0 && !audio_queue(audio, emulator)) {
+            audio_close(audio);
+            emulator_set_audio_sample_rate(emulator, 0);
         }
 
         draw_frame(emulator, options->palette, pixels);
@@ -447,8 +458,13 @@ static int run(
         }
 
         if (audio->device != 0) {
-            audio_wait(audio);
-            continue;
+            if (audio_wait(audio)) {
+                next_frame = SDL_GetPerformanceCounter();
+                continue;
+            }
+            fprintf(stderr, "Sound stopped draining; using clock pacing\n");
+            audio_close(audio);
+            emulator_set_audio_sample_rate(emulator, 0);
         }
 
         /* No sound to pace by: keep the real frame rate with the clock. If we

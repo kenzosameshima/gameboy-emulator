@@ -215,10 +215,10 @@ EmulatorStatus emulator_run_frame(Emulator *emulator)
         if (status != EMULATOR_OK) {
             break;
         }
-        if (emulator_is_stalled(emulator)) {
-            status = EMULATOR_STALLED;
-            break;
-        }
+    }
+    if (status == EMULATOR_OK && emulator->cycles != start &&
+        emulator_is_stalled(emulator)) {
+        status = EMULATOR_STALLED;
     }
     atomic_store(&emulator->running, false);
     atomic_store(&emulator->stop_requested, false);

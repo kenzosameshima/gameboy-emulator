@@ -86,7 +86,11 @@ SDL_FRONTEND = $(BUILD)/gameboy-sdl$(EXE)
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null | sed "s/-I/-isystem /g")
 SDL_LIBS := $(shell pkg-config --libs sdl2 2>/dev/null)
 
-TEST_SRC = $(wildcard tests/test_*.c)
+# The deterministic front-end audio test requires SDL headers and linking.
+TEST_SRC = $(filter-out tests/test_sdl_audio.c,$(wildcard tests/test_*.c))
+ifneq ($(SDL_LIBS),)
+TEST_SRC += tests/test_sdl_audio.c
+endif
 TEST_BIN = $(TEST_SRC:tests/%.c=$(BUILD)/tests/%$(EXE))
 
 ALL_OBJ = $(CORE_OBJ) \
@@ -124,6 +128,10 @@ $(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB)
 $(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB)
 	$(CC) $(LDFLAGS) $^ -o $@
 
+
+$(BUILD)/tests/test_sdl_audio.o: CPPFLAGS += $(SDL_CFLAGS)
+$(BUILD)/tests/test_sdl_audio$(EXE): $(BUILD)/tests/test_sdl_audio.o $(CORE_LIB)
+	$(CC) $(LDFLAGS) $^ $(SDL_LIBS) -o $@
 
 # SDL include flags apply to the front end only.
 $(BUILD)/frontend/sdl_main.o: CPPFLAGS += $(SDL_CFLAGS)

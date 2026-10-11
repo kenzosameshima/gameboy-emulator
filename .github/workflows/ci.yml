@@ -48,6 +48,11 @@ jobs:
       - name: Run a few frames headless
         run: SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy build/gameboy-sdl roms/dmg-acid2.gb --frames 60 --scale 2
 
+      # The check jobs have no SDL, so the makefile leaves this test out
+      # there. It replaces SDL's audio and clock calls with fakes.
+      - name: Front-end audio pacing test
+        run: make -j"$(nproc)" build/tests/test_sdl_audio && build/tests/test_sdl_audio
+
   # The Mooneye acceptance ROMs for the DMG. Known failures are listed in
   # tools/mooneye-expected-failures.txt; a new failure fails the job.
   mooneye:
