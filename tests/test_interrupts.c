@@ -8,99 +8,75 @@
 #include <cpu.h>
 #include <memory.h>
 
-static void setup_cpu(
-    CPU *cpu,
-    Bus *bus,
-    Memory *memory,
-    Cartridge *cartridge,
-    InterruptRegisters *interrupts
-)
-{
-    cartridge_init(cartridge);
-    cartridge->rom_size = 0x8000;
-    cartridge->rom = calloc(cartridge->rom_size, sizeof(uint8_t));
-    assert(cartridge->rom != NULL);
+#include "test_util.h"
 
-    memory_init(memory);
-    interrupts->interrupt_flag = 0;
-    interrupts->interrupt_enable = 0;
-    bus_init(bus, cartridge, memory, interrupts);
-    cpu_init(cpu, bus, bus->interrupts);
-}
-
-static void cleanup_cpu(Cartridge *cartridge)
+/* The CPU runs without a tick handler, so nothing else on the bus moves. */
+static void setup_cpu(TestMachine *machine)
 {
-    cartridge_destroy(cartridge);
+    test_machine_init(machine);
+    cpu_init(&machine->cpu, &machine->bus, &machine->interrupts);
 }
 
 static void test_interrupt_registers(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
     /* IF reads with its upper three bits set; IE keeps all eight bits. */
-    assert(bus_read(&bus, 0xFF0F) == 0xE0);
-    assert(bus_read(&bus, 0xFFFF) == 0);
+    assert(bus_read(&machine.bus, 0xFF0F) == 0xE0);
+    assert(bus_read(&machine.bus, 0xFFFF) == 0);
 
-    bus_write(&bus, 0xFF0F, (uint8_t)(INTERRUPT_VBLANK | 0xE0));
-    bus_write(&bus, 0xFFFF, (uint8_t)(INTERRUPT_TIMER | 0xE0));
+    bus_write(&machine.bus, 0xFF0F, (uint8_t)(INTERRUPT_VBLANK | 0xE0));
+    bus_write(&machine.bus, 0xFFFF, (uint8_t)(INTERRUPT_TIMER | 0xE0));
 
-    assert(bus_read(&bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
-    assert(bus_read(&bus, 0xFFFF) == (INTERRUPT_TIMER | 0xE0));
+    assert(bus_read(&machine.bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
+    assert(bus_read(&machine.bus, 0xFFFF) == (INTERRUPT_TIMER | 0xE0));
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_halt_wakeup_without_service(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    cartridge.rom[0x0100] = 0x76;
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
+    machine.cartridge.rom[0x0100] = 0x76;
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
 
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
-    assert(cpu.step_status == CPU_STEP_HALTED);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
+    assert(machine.cpu.step_status == CPU_STEP_HALTED);
 
-    bus_write(&bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
-    assert(cpu.step_status == CPU_STEP_HALTED);
+    bus_write(&machine.bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
+    assert(machine.cpu.step_status == CPU_STEP_HALTED);
 
-    bus_write(&bus, 0xFF0F, INTERRUPT_VBLANK);
-    bus_write(&bus, 0xFFFF, 0);
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
-    assert(cpu.step_status == CPU_STEP_HALTED);
+    bus_write(&machine.bus, 0xFF0F, INTERRUPT_VBLANK);
+    bus_write(&machine.bus, 0xFFFF, 0);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
+    assert(machine.cpu.step_status == CPU_STEP_HALTED);
 
-    cpu_init(&cpu, &bus, bus.interrupts);
-    cartridge.rom[0x0100] = 0x76;
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
+    cpu_init(&machine.cpu, &machine.bus, machine.bus.interrupts);
+    machine.cartridge.rom[0x0100] = 0x76;
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
 
-    bus_write(&bus, 0xFF0F, INTERRUPT_VBLANK);
-    bus_write(&bus, 0xFFFF, INTERRUPT_VBLANK);
-    cpu.ime = false;
+    bus_write(&machine.bus, 0xFF0F, INTERRUPT_VBLANK);
+    bus_write(&machine.bus, 0xFFFF, INTERRUPT_VBLANK);
+    machine.cpu.ime = false;
 
     /* HALT ends at once and the next instruction (a NOP) runs in the same step. */
-    assert(cpu_step(&cpu) == 4);
-    assert(!cpu.halted);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(cpu.ime == false);
-    assert(bus_read(&bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
-    assert(cpu.registers.pc == 0x0102);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(!machine.cpu.halted);
+    assert(machine.cpu.step_status == CPU_STEP_EXECUTED);
+    assert(machine.cpu.ime == false);
+    assert(bus_read(&machine.bus, 0xFF0F) == (INTERRUPT_VBLANK | 0xE0));
+    assert(machine.cpu.registers.pc == 0x0102);
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_interrupt_service(
@@ -108,214 +84,198 @@ static void test_interrupt_service(
     uint16_t vector
 )
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
     const uint16_t return_pc = 0x2345;
-    cpu.registers.pc = return_pc;
-    cpu.registers.sp = 0xC100;
-    cpu.ime = true;
+    machine.cpu.registers.pc = return_pc;
+    machine.cpu.registers.sp = 0xC100;
+    machine.cpu.ime = true;
 
     bus_write(
-        &bus,
+        &machine.bus,
         INTERRUPT_FLAG_ADDRESS,
         (uint8_t)(interrupt_mask | INTERRUPT_TIMER)
     );
-    bus_write(&bus, INTERRUPT_ENABLE_ADDRESS, interrupt_mask);
+    bus_write(&machine.bus, INTERRUPT_ENABLE_ADDRESS, interrupt_mask);
 
-    assert(cpu_step(&cpu) == 20);
-    assert(cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
-    assert(!cpu.halted);
-    assert(!cpu.ime);
-    assert(cpu.registers.pc == vector);
-    assert(cpu.registers.sp == 0xC0FE);
-    assert(bus_read(&bus, 0xC0FE) == 0x45);
-    assert(bus_read(&bus, 0xC0FF) == 0x23);
+    assert(cpu_step(&machine.cpu) == 20);
+    assert(machine.cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(!machine.cpu.halted);
+    assert(!machine.cpu.ime);
+    assert(machine.cpu.registers.pc == vector);
+    assert(machine.cpu.registers.sp == 0xC0FE);
+    assert(bus_read(&machine.bus, 0xC0FE) == 0x45);
+    assert(bus_read(&machine.bus, 0xC0FF) == 0x23);
     assert(
-        bus_read(&bus, INTERRUPT_FLAG_ADDRESS) ==
+        bus_read(&machine.bus, INTERRUPT_FLAG_ADDRESS) ==
         (uint8_t)((INTERRUPT_TIMER & (uint8_t)~interrupt_mask) | 0xE0)
     );
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_interrupt_priority(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    cpu.registers.pc = 0x3456;
-    cpu.registers.sp = 0xC100;
-    cpu.ime = true;
+    machine.cpu.registers.pc = 0x3456;
+    machine.cpu.registers.sp = 0xC100;
+    machine.cpu.ime = true;
 
     bus_write(
-        &bus,
+        &machine.bus,
         INTERRUPT_FLAG_ADDRESS,
         (uint8_t)(INTERRUPT_VBLANK | INTERRUPT_TIMER)
     );
     bus_write(
-        &bus,
+        &machine.bus,
         INTERRUPT_ENABLE_ADDRESS,
         (uint8_t)(INTERRUPT_VBLANK | INTERRUPT_TIMER)
     );
 
-    assert(cpu_step(&cpu) == 20);
-    assert(cpu.registers.pc == 0x0040);
+    assert(cpu_step(&machine.cpu) == 20);
+    assert(machine.cpu.registers.pc == 0x0040);
     assert(
-        bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == (INTERRUPT_TIMER | 0xE0)
+        bus_read(&machine.bus, INTERRUPT_FLAG_ADDRESS) ==
+        (INTERRUPT_TIMER | 0xE0)
     );
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_halted_interrupt_service(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    cartridge.rom[0x0100] = 0x76;
-    cpu.registers.sp = 0xC100;
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.halted);
+    machine.cartridge.rom[0x0100] = 0x76;
+    machine.cpu.registers.sp = 0xC100;
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.halted);
 
-    bus_write(&bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
-    bus_write(&bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
-    cpu.ime = true;
+    bus_write(&machine.bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
+    bus_write(&machine.bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
+    machine.cpu.ime = true;
 
-    assert(cpu_step(&cpu) == 20);
-    assert(cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
-    assert(!cpu.halted);
-    assert(cpu.registers.pc == 0x0040);
-    assert(cpu.registers.sp == 0xC0FE);
-    assert(bus_read(&bus, 0xC0FE) == 0x01);
-    assert(bus_read(&bus, 0xC0FF) == 0x01);
+    assert(cpu_step(&machine.cpu) == 20);
+    assert(machine.cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(!machine.cpu.halted);
+    assert(machine.cpu.registers.pc == 0x0040);
+    assert(machine.cpu.registers.sp == 0xC0FE);
+    assert(bus_read(&machine.bus, 0xC0FE) == 0x01);
+    assert(bus_read(&machine.bus, 0xC0FF) == 0x01);
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_normal_execution_without_pending(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    cartridge.rom[0x0100] = 0x00;
-    cpu.ime = true;
+    machine.cartridge.rom[0x0100] = 0x00;
+    machine.cpu.ime = true;
 
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(cpu.registers.pc == 0x0101);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.step_status == CPU_STEP_EXECUTED);
+    assert(machine.cpu.registers.pc == 0x0101);
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_di_ei_reti(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    cartridge.rom[0x0100] = 0xF3;
-    cpu.ime = true;
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(!cpu.ime);
-    assert(cpu.registers.pc == 0x0101);
+    machine.cartridge.rom[0x0100] = 0xF3;
+    machine.cpu.ime = true;
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.step_status == CPU_STEP_EXECUTED);
+    assert(!machine.cpu.ime);
+    assert(machine.cpu.registers.pc == 0x0101);
 
-    cpu_init(&cpu, &bus, bus.interrupts);
-    cartridge.rom[0x0100] = 0xFB;
-    cartridge.rom[0x0101] = 0x00;
-    assert(cpu_step(&cpu) == 4);
-    assert(!cpu.ime);
-    assert(cpu.ime_enable_delay == 1);
-    assert(cpu.registers.pc == 0x0101);
+    cpu_init(&machine.cpu, &machine.bus, machine.bus.interrupts);
+    machine.cartridge.rom[0x0100] = 0xFB;
+    machine.cartridge.rom[0x0101] = 0x00;
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(!machine.cpu.ime);
+    assert(machine.cpu.ime_enable_delay == 1);
+    assert(machine.cpu.registers.pc == 0x0101);
 
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.ime);
-    assert(cpu.ime_enable_delay == 0);
-    assert(cpu.registers.pc == 0x0102);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.ime);
+    assert(machine.cpu.ime_enable_delay == 0);
+    assert(machine.cpu.registers.pc == 0x0102);
 
-    cpu_init(&cpu, &bus, bus.interrupts);
-    cpu.registers.sp = 0xC100;
-    cartridge.rom[0x0100] = 0xFB;
-    cartridge.rom[0x0101] = 0x00;
-    bus_write(&bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
-    bus_write(&bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
+    cpu_init(&machine.cpu, &machine.bus, machine.bus.interrupts);
+    machine.cpu.registers.sp = 0xC100;
+    machine.cartridge.rom[0x0100] = 0xFB;
+    machine.cartridge.rom[0x0101] = 0x00;
+    bus_write(&machine.bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
+    bus_write(&machine.bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
 
-    assert(cpu_step(&cpu) == 4);
-    assert(!cpu.ime);
-    assert(cpu.registers.pc == 0x0101);
-    assert(bus_read(&bus, INTERRUPT_FLAG_ADDRESS) == (INTERRUPT_VBLANK | 0xE0));
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(!machine.cpu.ime);
+    assert(machine.cpu.registers.pc == 0x0101);
+    assert(
+        bus_read(&machine.bus, INTERRUPT_FLAG_ADDRESS) ==
+        (INTERRUPT_VBLANK | 0xE0)
+    );
 
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.ime);
-    assert(cpu.registers.pc == 0x0102);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.ime);
+    assert(machine.cpu.registers.pc == 0x0102);
 
-    assert(cpu_step(&cpu) == 20);
-    assert(cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
-    assert(cpu.registers.pc == 0x0040);
-    assert(bus_read(&bus, 0xC0FE) == 0x02);
-    assert(bus_read(&bus, 0xC0FF) == 0x01);
+    assert(cpu_step(&machine.cpu) == 20);
+    assert(machine.cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(machine.cpu.registers.pc == 0x0040);
+    assert(bus_read(&machine.bus, 0xC0FE) == 0x02);
+    assert(bus_read(&machine.bus, 0xC0FF) == 0x01);
 
-    cpu_init(&cpu, &bus, bus.interrupts);
-    cpu.registers.sp = 0xFFFC;
-    memory_write(&memory, 0xFFFC, 0x78);
-    memory_write(&memory, 0xFFFD, 0x56);
-    cartridge.rom[0x0100] = 0xD9;
+    cpu_init(&machine.cpu, &machine.bus, machine.bus.interrupts);
+    machine.cpu.registers.sp = 0xFFFC;
+    memory_write(&machine.memory, 0xFFFC, 0x78);
+    memory_write(&machine.memory, 0xFFFD, 0x56);
+    machine.cartridge.rom[0x0100] = 0xD9;
 
-    assert(cpu_step(&cpu) == 16);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(cpu.registers.pc == 0x5678);
-    assert(cpu.registers.sp == 0xFFFE);
-    assert(cpu.ime);
-    assert(cpu.ime_enable_delay == 0);
+    assert(cpu_step(&machine.cpu) == 16);
+    assert(machine.cpu.step_status == CPU_STEP_EXECUTED);
+    assert(machine.cpu.registers.pc == 0x5678);
+    assert(machine.cpu.registers.sp == 0xFFFE);
+    assert(machine.cpu.ime);
+    assert(machine.cpu.ime_enable_delay == 0);
 
-    cpu_init(&cpu, &bus, bus.interrupts);
-    cpu.registers.sp = 0xC100;
-    cpu.ime = true;
-    bus_write(&bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
-    bus_write(&bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
-    cartridge.rom[0x0040] = 0xD9;
-    cartridge.rom[0x0100] = 0x00;
+    cpu_init(&machine.cpu, &machine.bus, machine.bus.interrupts);
+    machine.cpu.registers.sp = 0xC100;
+    machine.cpu.ime = true;
+    bus_write(&machine.bus, INTERRUPT_FLAG_ADDRESS, INTERRUPT_VBLANK);
+    bus_write(&machine.bus, INTERRUPT_ENABLE_ADDRESS, INTERRUPT_VBLANK);
+    machine.cartridge.rom[0x0040] = 0xD9;
+    machine.cartridge.rom[0x0100] = 0x00;
 
-    assert(cpu_step(&cpu) == 20);
-    assert(cpu.registers.pc == 0x0040);
-    assert(!cpu.ime);
+    assert(cpu_step(&machine.cpu) == 20);
+    assert(machine.cpu.registers.pc == 0x0040);
+    assert(!machine.cpu.ime);
 
-    assert(cpu_step(&cpu) == 16);
-    assert(cpu.registers.pc == 0x0100);
-    assert(cpu.registers.sp == 0xC100);
-    assert(cpu.ime);
+    assert(cpu_step(&machine.cpu) == 16);
+    assert(machine.cpu.registers.pc == 0x0100);
+    assert(machine.cpu.registers.sp == 0xC100);
+    assert(machine.cpu.ime);
 
-    assert(cpu_step(&cpu) == 4);
-    assert(cpu.step_status == CPU_STEP_EXECUTED);
-    assert(cpu.registers.pc == 0x0101);
+    assert(cpu_step(&machine.cpu) == 4);
+    assert(machine.cpu.step_status == CPU_STEP_EXECUTED);
+    assert(machine.cpu.registers.pc == 0x0101);
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 /*
  * Priority is by bit: VBlank beats LCD STAT beats Timer beats Serial beats
  * Joypad. Vectors are 0x40 + 8 * bit. Bits above the five sources are
- * not interrupts.
+ * not machine.interrupts.
  */
 static void test_priority_and_vectors(void)
 {
@@ -357,33 +317,29 @@ static void test_priority_and_vectors(void)
  */
 static void test_cpu_is_stalled(void)
 {
-    CPU cpu;
-    Bus bus;
-    Memory memory;
-    Cartridge cartridge;
-    InterruptRegisters interrupts;
-    setup_cpu(&cpu, &bus, &memory, &cartridge, &interrupts);
+    TestMachine machine;
+    setup_cpu(&machine);
 
-    assert(!cpu_is_stalled(&cpu));
+    assert(!cpu_is_stalled(&machine.cpu));
 
     /* HALT ends on IF & IE, so with every source masked it never ends. */
-    cpu.halted = true;
-    assert(cpu_is_stalled(&cpu));
+    machine.cpu.halted = true;
+    assert(cpu_is_stalled(&machine.cpu));
 
-    interrupts.interrupt_enable = INTERRUPT_TIMER;
-    assert(!cpu_is_stalled(&cpu));
+    machine.interrupts.interrupt_enable = INTERRUPT_TIMER;
+    assert(!cpu_is_stalled(&machine.cpu));
 
     /* Bits above the five sources do not count as interrupt sources. */
-    interrupts.interrupt_enable = 0xE0;
-    assert(cpu_is_stalled(&cpu));
+    machine.interrupts.interrupt_enable = 0xE0;
+    assert(cpu_is_stalled(&machine.cpu));
 
     /* STOP ends on a button press, which can come at any time. */
-    cpu.halted = false;
-    cpu.stopped = true;
-    interrupts.interrupt_enable = 0;
-    assert(!cpu_is_stalled(&cpu));
+    machine.cpu.halted = false;
+    machine.cpu.stopped = true;
+    machine.interrupts.interrupt_enable = 0;
+    assert(!cpu_is_stalled(&machine.cpu));
 
-    cleanup_cpu(&cartridge);
+    test_machine_destroy(&machine);
 }
 
 static void test_pending_interrupts_and_halt(void)

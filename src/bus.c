@@ -49,7 +49,7 @@ static bool bus_is_joypad_address(uint16_t address)
  */
 static bool bus_blocked_by_dma(const Bus *bus, uint16_t address)
 {
-    if (bus->dma == NULL || !dma_is_copying(bus->dma)) {
+    if (!dma_is_copying(bus->dma)) {
         return false;
     }
 
@@ -100,48 +100,24 @@ void bus_init(
     Bus *bus,
     Cartridge *cartridge,
     Memory *memory,
-    InterruptRegisters *interrupts
+    InterruptRegisters *interrupts,
+    Timer *timer,
+    Serial *serial,
+    Ppu *ppu,
+    Dma *dma,
+    Joypad *joypad,
+    Apu *apu
 )
 {
     bus->cartridge = cartridge;
     bus->memory = memory;
     bus->interrupts = interrupts;
-    bus->timer = NULL;
-    bus->serial = NULL;
-    bus->ppu = NULL;
-    bus->dma = NULL;
-    bus->joypad = NULL;
-    bus->apu = NULL;
-}
-
-void bus_attach_timer(Bus *bus, Timer *timer)
-{
     bus->timer = timer;
-}
-
-void bus_attach_serial(Bus *bus, Serial *serial)
-{
     bus->serial = serial;
-}
-
-void bus_attach_ppu(Bus *bus, Ppu *ppu)
-{
     bus->ppu = ppu;
-}
-
-void bus_attach_apu(Bus *bus, Apu *apu)
-{
-    bus->apu = apu;
-}
-
-void bus_attach_dma(Bus *bus, Dma *dma)
-{
     bus->dma = dma;
-}
-
-void bus_attach_joypad(Bus *bus, Joypad *joypad)
-{
     bus->joypad = joypad;
+    bus->apu = apu;
 }
 
 static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
@@ -166,27 +142,27 @@ static uint8_t bus_read_unlocked(Bus *bus, uint16_t address)
     }
 
     if (bus_is_ppu_address(address)) {
-        return bus->ppu == NULL ? 0xFF : ppu_read(bus->ppu, address);
+        return ppu_read(bus->ppu, address);
     }
 
     if (bus_is_apu_address(address)) {
-        return bus->apu == NULL ? 0xFF : apu_read(bus->apu, address);
+        return apu_read(bus->apu, address);
     }
 
     if (bus_is_joypad_address(address)) {
-        return bus->joypad == NULL ? 0xFF : joypad_read(bus->joypad);
+        return joypad_read(bus->joypad);
     }
 
     if (bus_is_dma_address(address)) {
-        return bus->dma == NULL ? 0xFF : dma_read(bus->dma);
+        return dma_read(bus->dma);
     }
 
     if (bus_is_serial_address(address)) {
-        return bus->serial == NULL ? 0xFF : serial_read(bus->serial, address);
+        return serial_read(bus->serial, address);
     }
 
     if (bus_is_timer_address(address)) {
-        return bus->timer == NULL ? 0xFF : timer_read(bus->timer, address);
+        return timer_read(bus->timer, address);
     }
 
     if (address == INTERRUPT_FLAG_ADDRESS) {
@@ -253,47 +229,35 @@ void bus_write(Bus *bus, uint16_t address, uint8_t value)
     }
 
     if (bus_is_ppu_address(address)) {
-        if (bus->ppu != NULL) {
-            ppu_write(bus->ppu, address, value);
-        }
+        ppu_write(bus->ppu, address, value);
         return;
     }
 
     if (bus_is_joypad_address(address)) {
-        if (bus->joypad != NULL) {
-            joypad_write(bus->joypad, value);
-        }
+        joypad_write(bus->joypad, value);
         return;
     }
 
     if (bus_is_apu_address(address)) {
-        if (bus->apu != NULL) {
-            apu_write(bus->apu, address, value);
-        }
+        apu_write(bus->apu, address, value);
         return;
     }
 
     if (bus_is_dma_address(address)) {
-        if (bus->dma != NULL) {
-            dma_write(bus->dma, value);
-        }
+        dma_write(bus->dma, value);
         return;
     }
 
     if (bus_is_serial_address(address)) {
-        if (bus->serial != NULL) {
-            serial_write(bus->serial, address, value);
-        }
+        serial_write(bus->serial, address, value);
         return;
     }
 
     if (bus_is_timer_address(address)) {
-        if (bus->timer != NULL) {
-            uint16_t before = bus->timer->divider;
-            timer_write(bus->timer, address, value);
-            if (address == TIMER_DIV_ADDRESS && bus->serial != NULL) {
-                serial_divider_changed(bus->serial, before, bus->timer->divider);
-            }
+        uint16_t before = bus->timer->divider;
+        timer_write(bus->timer, address, value);
+        if (address == TIMER_DIV_ADDRESS) {
+            serial_divider_changed(bus->serial, before, bus->timer->divider);
         }
         return;
     }
