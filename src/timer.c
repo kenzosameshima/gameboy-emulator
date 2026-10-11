@@ -52,6 +52,15 @@ static void timer_increment_tima(Timer *timer)
     timer->tima++;
 }
 
+/* Counting and DIV writes change the counter through here, so their falls
+ * are recorded. The resets set it directly and clear the record. */
+static void timer_set_divider(Timer *timer, uint16_t divider)
+{
+    timer->falling_edges =
+        (CounterEdges)(timer->falling_edges | (timer->divider & ~divider));
+    timer->divider = divider;
+}
+
 void timer_init(Timer *timer, InterruptRegisters *interrupts)
 {
     timer->divider = 0;
@@ -61,12 +70,14 @@ void timer_init(Timer *timer, InterruptRegisters *interrupts)
     timer->reload_pending = false;
     timer->reload_delay = 0;
     timer->reload_hold = 0;
+    timer->falling_edges = 0;
     timer->interrupts = interrupts;
 }
 
 void timer_power_on(Timer *timer)
 {
     timer->divider = TIMER_BOOT_DIVIDER;
+    timer->falling_edges = 0;
 }
 
 static void timer_advance_reload(Timer *timer)
@@ -116,7 +127,7 @@ void timer_write(Timer *timer, uint16_t address, uint8_t value)
         case TIMER_DIV_ADDRESS:
             {
                 bool old_signal = timer_signal(timer);
-                timer->divider = 0;
+                timer_set_divider(timer, 0);
 
                 if (old_signal && !timer_signal(timer)) {
                     timer_increment_tima(timer);
@@ -172,10 +183,19 @@ void timer_step(Timer *timer, CpuCycles cycles)
         timer_advance_reload(timer);
 
         bool old_signal = timer_signal(timer);
-        timer->divider = (uint16_t)(timer->divider + 1);
+        timer_set_divider(timer, (uint16_t)(timer->divider + 1));
 
         if (old_signal && !timer_signal(timer)) {
             timer_increment_tima(timer);
         }
     }
+}
+
+CounterEdges timer_take_falling_edges(Timer *timer)
+{
+    CounterEdges edges = timer->falling_edges;
+
+    timer->falling_edges = 0;
+
+    return edges;
 }

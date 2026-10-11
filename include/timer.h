@@ -28,6 +28,9 @@ typedef struct Timer {
     /* M-cycle after the reload, when writes behave differently. */
     uint8_t reload_hold;
 
+    /* Counter bits that fell and have not been taken yet. */
+    CounterEdges falling_edges;
+
     InterruptRegisters *interrupts;
 } Timer;
 
@@ -44,6 +47,7 @@ void timer_init(Timer *timer, InterruptRegisters *interrupts);
 /*
  * Puts the timer in the state the DMG boot ROM leaves it: the divider at
  * 0xABCC, so DIV reads 0xAB at the entry point. timer_init() starts it at 0.
+ * Both are resets: no falling edges are pending afterwards.
  */
 void timer_power_on(Timer *timer);
 
@@ -51,5 +55,14 @@ uint8_t timer_read(const Timer *timer, uint16_t address);
 void timer_write(Timer *timer, uint16_t address, uint8_t value);
 
 void timer_step(Timer *timer, CpuCycles cycles);
+
+/*
+ * Returns the counter bits that fell, from counting or a DIV write, and
+ * clears them. Records whether each counter bit fell since the last take or
+ * reset; repeated falls are coalesced. Taking once per M-cycle, with at most
+ * one DIV write before that cycle's four increments, preserves every fall
+ * for bits 2 and above.
+ */
+CounterEdges timer_take_falling_edges(Timer *timer);
 
 #endif
