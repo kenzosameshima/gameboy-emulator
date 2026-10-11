@@ -27,23 +27,26 @@ typedef struct Bus {
 } Bus;
 
 /*
- * Implemented address map (see memory_map.h):
+ * The address map, in the order bus.c decodes it:
  * 0000-7FFF cartridge ROM; writes program the cartridge mapper
+ * 8000-9FFF video RAM
  * A000-BFFF cartridge RAM
  * C000-DFFF work RAM
- * E000-FDFF echo RAM
- * 8000-9FFF video RAM
+ * E000-FDFF echo of C000-DDFF
  * FE00-FE9F OAM
  * FF00      joypad (P1)
  * FF01-FF02 serial registers
  * FF04-FF07 timer registers
- * FF0F       interrupt flag (IF)
- * FF10-FF26 sound registers, FF30-FF3F wave RAM
- * FF40-FF45, FF47-FF4B LCD registers
+ * FF0F      interrupt flag (IF)
+ * FF10-FF26 sound registers
+ * FF30-FF3F wave RAM
+ * FF40-FF45 LCD registers
  * FF46      OAM DMA
+ * FF47-FF4B LCD registers
  * FF80-FFFE high RAM
- * FFFF       interrupt enable (IE)
- * All other addresses currently return 0xFF or ignore writes.
+ * FFFF      interrupt enable (IE)
+ * Everything else (FEA0-FEFF and the unused I/O addresses) reads 0xFF and
+ * ignores writes.
  *
  * While OAM DMA is copying, bus_read() and bus_write() cannot reach OAM or
  * the bus the DMA source is on (the external bus for ROM, cartridge RAM, work
