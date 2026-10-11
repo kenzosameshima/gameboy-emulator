@@ -13,6 +13,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include <cartridge.h>
 
 #include "test_util.h"
@@ -386,10 +394,49 @@ static void test_clock_save_without_footer(void)
     remove(save_path);
 }
 
+static void test_failed_replace_preserves_temporary(void)
+{
+    Cartridge cartridge;
+    const char *blocked = "test_save_blocked.sav";
+    const char *temporary = "test_save_blocked.sav.tmp";
+    load(&cartridge, TYPE_MBC1_RAM_BATTERY, RAM_CODE_8K);
+    cartridge.ram[0] = 0x42;
+#ifdef _WIN32
+    /* Deny deletion of the old save, as another application can. */
+    uint8_t old = 0x19;
+    test_write_file(blocked, &old, 1);
+    HANDLE file = CreateFileA(blocked, GENERIC_READ, FILE_SHARE_READ,
+                              NULL, OPEN_EXISTING, 0, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+#else
+    /* A directory at the destination forces rename to fail. */
+    assert(mkdir(blocked, 0700) == 0);
+#endif
+    assert(cartridge_save_battery(&cartridge, blocked, 0) ==
+           CARTRIDGE_SAVE_IO_ERROR);
+    assert(file_size(temporary) == cartridge.ram_size);
+    assert(cartridge_load_battery(&cartridge, temporary, 0) ==
+           CARTRIDGE_SAVE_OK);
+    assert(cartridge.ram[0] == 0x42);
+#ifdef _WIN32
+    assert(CloseHandle(file));
+    FILE *saved = fopen(blocked, "rb");
+    assert(saved != NULL);
+    assert(fgetc(saved) == 0x19);
+    assert(fclose(saved) == 0);
+    assert(remove(blocked) == 0);
+#else
+    assert(rmdir(blocked) == 0);
+#endif
+    assert(remove(temporary) == 0);
+    cartridge_destroy(&cartridge);
+}
+
 int main(void)
 {
     test_which_cartridges_have_a_battery();
     test_ram_round_trip();
+    test_failed_replace_preserves_temporary();
     test_failed_loads_change_nothing();
     test_mbc2_save();
     test_mbc3_without_a_clock_has_no_footer();
