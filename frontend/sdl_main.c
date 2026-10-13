@@ -488,10 +488,12 @@ static int run(
     }
 
     /* Sharp pixels, and the picture keeps its shape when the window is
-     * resized. */
+     * resized. It grows in whole steps, so every Game Boy pixel is the same
+     * size; the rest of the window is a border. */
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_RenderSetLogicalSize(renderer, EMULATOR_SCREEN_WIDTH,
                              EMULATOR_SCREEN_HEIGHT);
+    SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 
     SDL_Texture *texture = SDL_CreateTexture(
         renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
@@ -654,6 +656,12 @@ int main(int argc, char **argv)
         emulator_destroy(emulator);
         return 1;
     }
+
+    /* Windows stretches the window of a program that does not handle display
+     * scaling itself, which blurs the picture at 125% or 150%. This makes
+     * SDL handle it, with window sizes in scaled points, so the window
+     * still has the same size on the screen. */
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         report(NULL, "Could not start SDL: %s", SDL_GetError());

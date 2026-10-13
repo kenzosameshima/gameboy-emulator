@@ -25,6 +25,38 @@ static size_t extra_size(const Cartridge *cartridge)
     return ops->save_extra_size != NULL ? ops->save_extra_size(cartridge) : 0;
 }
 
+/* Moves `from` over `to`, replacing it. */
+static bool replace_file(const char *from, const char *to)
+{
+#ifdef _WIN32
+    /*
+     * Virus scanners, the search indexer and sync clients such as OneDrive
+     * hold files open for a moment, and while one holds the old save the
+     * move fails. Those failures are waited out for a while.
+     * ponytail: a fixed budget of 10 x 50 ms; a longer hold still fails and
+     * leaves the new save in the temporary file.
+     */
+    for (int attempt = 1;; attempt++) {
+        if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING)) {
+            return true;
+        }
+
+        DWORD error = GetLastError();
+        bool held = error == ERROR_ACCESS_DENIED ||
+                    error == ERROR_SHARING_VIOLATION ||
+                    error == ERROR_LOCK_VIOLATION;
+
+        if (!held || attempt == 10) {
+            return false;
+        }
+
+        Sleep(50);
+    }
+#else
+    return rename(from, to) == 0;
+#endif
+}
+
 /* Writes a whole file, or leaves the old one alone. */
 static bool write_file_atomically(
     const char *path,
@@ -54,11 +86,7 @@ static bool write_file_atomically(
         remove(temporary);
     } else {
         /* Keep a complete temporary save if replacement fails. */
-#ifdef _WIN32
-        ok = MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-        ok = rename(temporary, path) == 0;
-#endif
+        ok = replace_file(temporary, path);
     }
 
     free(temporary);
