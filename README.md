@@ -211,7 +211,7 @@ makefile                Build and test rules
 ## Requirements
 
 - GCC 14 or newer builds with `-std=c23`. Older GCC, such as 13 on Ubuntu 24.04, is detected by the Makefile and builds with `-std=c2x`. Clang works with `make CC=clang`.
-- GNU Make (`mingw32-make` from MSYS2 UCRT64 on Windows).
+- GNU Make (`mingw32-make` from MSYS2 UCRT64 on Windows). On Windows, `windres` (part of MSYS2's binutils) links `windows/utf8.manifest` into every program, so file names are UTF-8 there as on Linux and macOS (Windows 10 1903 or newer; older versions fall back to the ANSI code page).
 - A POSIX-like shell for the Makefile recipes.
 - SDL2 and pkg-config, only for the optional front end (`libsdl2-dev` on Debian and Ubuntu). The core, the tests and the other tools do not need them.
 
@@ -324,6 +324,7 @@ The test suite includes:
 - `test_cartridge_mbc5`: 9-bit ROM banking up to 512 banks including bank 0, wrapping to the ROM size, and RAM banking up to 128 KiB.
 - `test_cartridge_save`: which cartridges have a battery, the RAM dump and the clock footer byte for byte, failed loads that change nothing, and the clock catching up for the time the console was off (including the day counter wrapping and a halted clock).
 - `test_emulator_battery`: a program writes cartridge RAM, the emulator saves it, and a fresh emulator loads it and a second program reads it back.
+- `test_utf8_paths`: a ROM and a battery save named with characters outside the Windows ANSI code pages load and save through UTF-8 paths. The files are made and checked by their real names, through the UTF-16 API on Windows.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
 - `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
 - `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
