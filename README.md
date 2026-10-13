@@ -213,7 +213,7 @@ makefile                Build and test rules
 - GCC 14 or newer builds with `-std=c23`. Older GCC, such as 13 on Ubuntu 24.04, is detected by the Makefile and builds with `-std=c2x`. Clang works with `make CC=clang`.
 - GNU Make (`mingw32-make` from MSYS2 UCRT64 on Windows). On Windows, `windres` (part of MSYS2's binutils) links `windows/utf8.manifest` into every program, so file names are UTF-8 there as on Linux and macOS (Windows 10 1903 or newer; older versions fall back to the ANSI code page).
 - A POSIX-like shell for the Makefile recipes.
-- SDL2 and pkg-config, only for the optional front end (`libsdl2-dev` on Debian and Ubuntu). The core, the tests and the other tools do not need them.
+- SDL2 and pkg-config, only for the optional front end (`libsdl2-dev` on Debian and Ubuntu, `mingw-w64-ucrt-x86_64-SDL2` in MSYS2 UCRT64). The core, the tests and the other tools do not need them.
 
 The Makefile enables strict diagnostics: `-Wall -Wextra -Wpedantic -Werror -fanalyzer -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wundef -Wcast-qual -Wcast-align -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes`.
 
@@ -258,6 +258,8 @@ make sdl
 | `Esc` | Quit |
 
 Options: `--scale N` (window size as a multiple of 160x144, default 4), `--gray` (grayscale instead of the classic green) and `--frames N` (exit after N frames, used for smoke tests; with `SDL_VIDEODRIVER=dummy` it needs no display), `--no-save` and `--mute`. The window can be resized and keeps its shape. There is no pause key yet. Sound plays through SDL's audio queue at 48 kHz, and the machine is paced by how much is queued, so picture and sound stay together; without an audio device it says so and paces by the clock. A cartridge with a battery keeps its RAM (and an MBC3 clock) in a `.sav` file next to the ROM, with the same name: it is loaded at start, written every 30 seconds and when the program ends. `--no-save` turns that off.
+
+The ROM can also be dropped on the window: started without one (as a double click does), the window waits for a drop, and a ROM dropped while a game runs replaces it after the old game's save is written. Errors go to stderr and to a message box, since on Windows the front end is a GUI program with no console.
 
 ### Command line
 

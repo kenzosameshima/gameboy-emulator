@@ -1,4 +1,5 @@
-/* Exercise the front end with a deterministic audio device and clock. */
+/* Exercise the front end with a deterministic audio device and clock, and
+ * with message boxes that only count what they would show. */
 #include <assert.h>
 #include <SDL.h>
 #include <stdbool.h>
@@ -49,13 +50,30 @@ static int fake_queue(SDL_AudioDeviceID device, const void *data, Uint32 size)
     return 0;
 }
 
+static int message_boxes;
+static char last_message[1024];
+
+static int fake_message_box(Uint32 flags, const char *title,
+                            const char *message, SDL_Window *window)
+{
+    (void)flags;
+    (void)title;
+    (void)window;
+    message_boxes++;
+    snprintf(last_message, sizeof(last_message), "%s", message);
+    return 0;
+}
+
 int sdl_frontend_main(int argc, char **argv);
+/* SDL's flags define main as SDL_main on Windows. */
+#undef main
 #define main sdl_frontend_main
 #define SDL_GetQueuedAudioSize fake_queued
 #define SDL_GetTicks fake_ticks
 #define SDL_Delay fake_delay
 #define SDL_GetAudioDeviceStatus fake_status
 #define SDL_QueueAudio fake_queue
+#define SDL_ShowSimpleMessageBox fake_message_box
 #include "../frontend/sdl_main.c"
 #undef main
 
@@ -129,10 +147,51 @@ static void test_audio_wait_is_bounded(void)
     assert(audio_wait(&audio));
 }
 
+/* A ROM dropped on the window replaces the game after the old game's
+ * battery is written. One that does not load is shown in a box and leaves
+ * the game as it was. */
+static void test_dropped_rom_replaces_the_game(void)
+{
+    static uint8_t rom[0x8000];
+    rom[0x100] = 0x18; /* JR -2 */
+    rom[0x101] = 0xFE;
+    rom[0x147] = 0x03; /* MBC1 + RAM + battery */
+    rom[0x149] = 0x02; /* 8 KiB of RAM */
+    test_write_file("test_sdl_drop_a.gb", rom, sizeof(rom));
+    test_write_file("test_sdl_drop_b.gb", rom, sizeof(rom));
+
+    Options options = { .save = 1 };
+    Game game = { 0 };
+    Emulator *emulator = emulator_create();
+    assert(emulator != NULL);
+    message_boxes = 0;
+
+    assert(load_game(emulator, &game, "test_sdl_drop_a.gb", &options, NULL));
+    assert(game.loaded && game.saving);
+
+    change_game(emulator, &game, "test_sdl_drop_b.gb", &options, NULL);
+    assert(strcmp(game.save_path, "test_sdl_drop_b.sav") == 0);
+    assert(message_boxes == 0);
+    /* The old game's save was written on the way out. */
+    assert(remove("test_sdl_drop_a.sav") == 0);
+
+    change_game(emulator, &game, "test_sdl_drop_missing.gb", &options, NULL);
+    assert(message_boxes == 1);
+    assert(strstr(last_message, "Failed to load ROM") != NULL);
+    assert(game.saving);
+    assert(strcmp(game.save_path, "test_sdl_drop_b.sav") == 0);
+
+    emulator_destroy(emulator);
+    assert(remove("test_sdl_drop_b.sav") == 0);
+    assert(remove("test_sdl_drop_a.gb") == 0);
+    assert(remove("test_sdl_drop_b.gb") == 0);
+}
+
 int main(void)
 {
     test_stalled_cpu_produces_audio();
     test_audio_wait_is_bounded();
+    test_dropped_rom_replaces_the_game();
     puts("SDL audio pacing tests passed!");
     return 0;
 }
