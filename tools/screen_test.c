@@ -4,6 +4,7 @@
  * tearoom PPU tests, and Blargg ROMs such as halt_bug.
  *
  * Usage: screen_test <rom> <reference.png> [--frames N] [--max-cycles N]
+ *                    [--dump file]
  *
  * Without --frames the ROM is run until it executes LD B,B (opcode 0x40),
  * which the mealybug tests do when they are finished, and the picture is
@@ -11,7 +12,8 @@
  * frames first, for ROMs that just stay on a final screen.
  *
  * The reference is a 160 x 144 PNG using the four DMG shades #000000,
- * #555555, #AAAAAA and #FFFFFF.
+ * #555555, #AAAAAA and #FFFFFF. --dump saves the picture the ROM produced as
+ * 160 x 144 raw shades (0 lightest to 3 darkest), for looking at a failure.
  *
  * Exit code: 0 if the picture matches, 1 if it differs or the run fails.
  */
@@ -70,6 +72,7 @@ int main(int argc, char **argv)
 {
     const char *rom = NULL;
     const char *reference = NULL;
+    const char *dump = NULL;
     uint64_t frames = 0;
     uint64_t max_cycles = DEFAULT_MAX_CYCLES;
     int use_frames = 0;
@@ -82,6 +85,8 @@ int main(int argc, char **argv)
                 rom = NULL;
                 break;
             }
+        } else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+            dump = argv[++i];
         } else if (strcmp(argv[i], "--max-cycles") == 0 && i + 1 < argc) {
             if (!parse_number(argv[++i], &max_cycles)) {
                 rom = NULL;
@@ -100,7 +105,8 @@ int main(int argc, char **argv)
     if (rom == NULL || reference == NULL) {
         fprintf(
             stderr,
-            "Usage: %s <rom> <reference.png> [--frames N] [--max-cycles N]\n",
+            "Usage: %s <rom> <reference.png> [--frames N] [--max-cycles N] "
+            "[--dump file]\n",
             argv[0]
         );
         return 1;
@@ -147,6 +153,15 @@ int main(int argc, char **argv)
 
     if (!run_failed) {
         const uint8_t *picture = emulator_framebuffer(emulator);
+
+        if (dump != NULL) {
+            FILE *file = fopen(dump, "wb");
+
+            if (file != NULL) {
+                fwrite(picture, 1, (size_t)width * height, file);
+                fclose(file);
+            }
+        }
 
         for (unsigned y = 0; y < height; y++) {
             for (unsigned x = 0; x < width; x++) {
