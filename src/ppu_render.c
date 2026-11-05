@@ -293,7 +293,6 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
     LineSprite sprites[SPRITES_PER_LINE];
     unsigned count = select_sprites(ppu, sprites);
     unsigned penalty = 0;
-    bool any = false;
     unsigned previous_column = (unsigned)-1;
 
     for (unsigned i = 0; i < count; i++) {
@@ -307,7 +306,6 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
         unsigned offset = oam_x + ppu->scx;
         unsigned column = offset >> 3;
 
-        any = true;
         penalty += SPRITE_DOTS;
 
         /* The first sprite over a background tile waits for that tile's
@@ -320,5 +318,10 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
         }
     }
 
-    return any ? dots + penalty - SPRITE_OVERLAP : dots;
+    /*
+     * Turning the OBJ layer on shortens mode 3 by 3 dots even with no sprite
+     * on the line (the gbmicrotest ppu_sprite0 ROMs); each sprite then adds
+     * its penalty.
+     */
+    return dots + penalty - SPRITE_OVERLAP;
 }

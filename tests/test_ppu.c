@@ -980,6 +980,20 @@ static void test_mode3_length(void)
         assert(hblank_start(NO_OBJ, scx, NULL, 0) == 260);
     }
 
+    /*
+     * Turning the OBJ layer on takes 3 dots off mode 3 even with no sprite on
+     * the line (the gbmicrotest ppu_sprite0 ROMs keep an all-zero sprite in
+     * OAM, whose Y puts it above every line): SCX 1-3 then ends in the tick
+     * at 252 rather than 256, and 5-7 in 256 rather than 260.
+     */
+    for (uint8_t scx = 0; scx <= 3; scx++) {
+        assert(hblank_start(OBJ, scx, NULL, 0) == 252);
+    }
+
+    for (uint8_t scx = 4; scx <= 7; scx++) {
+        assert(hblank_start(OBJ, scx, NULL, 0) == 256);
+    }
+
     /* One sprite: 11 dots at X = 0 down to 6 dots from X = 5, minus 3. */
     static const uint8_t x0[] = { 0 };
     static const uint8_t x3[] = { 3 };

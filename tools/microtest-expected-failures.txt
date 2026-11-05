@@ -46,10 +46,4 @@ gbmicrotest/hblank_int_scx2.gb
 gbmicrotest/hblank_int_scx5.gb
 gbmicrotest/hblank_int_scx6.gb
 gbmicrotest/hblank_scx2_if_a.gb
-gbmicrotest/ppu_sprite0_scx1_b.gb
-gbmicrotest/ppu_sprite0_scx2_b.gb
-gbmicrotest/ppu_sprite0_scx3_b.gb
-gbmicrotest/ppu_sprite0_scx5_b.gb
-gbmicrotest/ppu_sprite0_scx6_b.gb
-gbmicrotest/ppu_sprite0_scx7_b.gb
 gbmicrotest/stat_write_glitch_l154_d.gb
