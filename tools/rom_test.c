@@ -45,6 +45,8 @@ enum {
 
     /* gbmicrotest: the verdict byte, how often it is read, and the default
      * budget (is_if_set_during_ime0 needs about 380 ms of emulated time). */
+    MICROTEST_ACTUAL_ADDRESS = 0xFF80,
+    MICROTEST_EXPECTED_ADDRESS = 0xFF81,
     MICROTEST_RESULT_ADDRESS = 0xFF82,
     MICROTEST_PASS = 0x01,
     MICROTEST_FAIL = 0xFF,
@@ -302,6 +304,14 @@ int main(int argc, char **argv)
             printf(" 0x%02X at PC=0x%04X",
                    (unsigned)fault.opcode, (unsigned)fault.pc);
         }
+    }
+
+    if (microtest && !capture->passed) {
+        /* The ROM keeps what it measured and what it expected next to the
+         * verdict; not every ROM sets them. */
+        printf(" actual=%02X expected=%02X",
+               (unsigned)memory_read(&emulator->memory, MICROTEST_ACTUAL_ADDRESS),
+               (unsigned)memory_read(&emulator->memory, MICROTEST_EXPECTED_ADDRESS));
     }
 
     printf("\n");
