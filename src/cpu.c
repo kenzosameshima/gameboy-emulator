@@ -42,6 +42,7 @@ void cpu_init(CPU *cpu, Bus *bus, InterruptRegisters *interrupts)
     cpu->interrupts = interrupts;
 
     cpu->halted = false;
+    cpu->halt_bug = false;
     cpu->stopped = false;
     cpu->ime = false;
     cpu->ime_enable_delay = 0;
@@ -189,7 +190,13 @@ CpuCycles cpu_step(CPU *cpu)
         return 0;
     }
 
-    cpu->registers.pc++;
+    if (cpu->halt_bug) {
+        /* The byte after a bugged HALT is read twice. */
+        cpu->halt_bug = false;
+    } else {
+        cpu->registers.pc++;
+    }
+
     cpu_idle(cpu);
 
     cpu_execute_opcode(cpu, opcode);
@@ -211,6 +218,29 @@ bool cpu_is_stalled(const CPU *cpu)
 
     /* STOP ends on a button press, which the front end can make any time. */
     return false;
+}
+
+/*
+ * HALT. With no enabled interrupt pending the CPU halts. With one pending it
+ * does not, and the HALT bug follows:
+ *
+ *  - IME is, or is about to be, on (an EI right before): the interrupt is
+ *    dispatched next and the address it pushes is the HALT's own, so the
+ *    HALT runs again after RETI.
+ *  - IME is off: the byte after the HALT is read twice.
+ *
+ * The pending set is read after the HALT's own opcode fetch cycle, which is
+ * where this runs.
+ */
+void cpu_halt(CPU *cpu)
+{
+    if (interrupts_pending(cpu->interrupts) == 0) {
+        cpu->halted = true;
+    } else if (cpu->ime || cpu->ime_enable_delay == 1) {
+        cpu->registers.pc--;
+    } else {
+        cpu->halt_bug = true;
+    }
 }
 
 static void cpu_advance_ime_delay(CPU *cpu)

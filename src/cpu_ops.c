@@ -408,7 +408,7 @@ void cpu_execute_opcode(CPU *cpu, uint8_t opcode)
 
         case 1:
             if (opcode == 0x76) { /* HALT */
-                cpu->halted = true;
+                cpu_halt(cpu);
             } else { /* LD r8,r8 */
                 cpu_write_r8(cpu, y, cpu_read_r8(cpu, z));
             }

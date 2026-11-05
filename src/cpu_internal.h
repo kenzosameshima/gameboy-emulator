@@ -62,6 +62,9 @@ uint16_t cpu_sp_plus_offset(CPU *cpu, uint8_t offset);
 void cpu_daa(CPU *cpu);
 
 /* Instruction decoders (cpu_ops.c, cpu_cb.c). */
+/* HALT, including the HALT bug (cpu.c). */
+void cpu_halt(CPU *cpu);
+
 bool cpu_opcode_is_illegal(uint8_t opcode);
 void cpu_execute_opcode(CPU *cpu, uint8_t opcode);
 void cpu_execute_cb(CPU *cpu);
