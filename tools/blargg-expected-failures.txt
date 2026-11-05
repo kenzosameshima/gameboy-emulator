@@ -1,0 +1,6 @@
+# Blargg ROMs that are known to fail on this emulator, one path per line
+# relative to the release. tools/testroms.sh blargg exits 1 only for a failure
+# that is not listed here, and reports listed ROMs that now pass.
+#
+# oam_bug needs the OAM corruption bug, which is not modelled.
+blargg/oam_bug/oam_bug.gb

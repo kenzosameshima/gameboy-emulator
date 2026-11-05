@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 #
 # Runs ROM suites from the Game Boy test ROM collection
-# (https://github.com/c-sp/game-boy-test-roms, MIT licence) through rom_test
-# and compares the results with the failures this emulator is known to have.
+# (https://github.com/c-sp/game-boy-test-roms, MIT licence) through rom_test or
+# screen_test and compares the results with the failures this emulator is
+# known to have.
 #
-# Usage: tools/testroms.sh <suite> [rom_test binary]   (default: build/rom_test)
+# Usage: tools/testroms.sh <suite> [runner binary]
 #
 # Suites:
 #   microtest   the gbmicrotest ROMs, checked on a real DMG. Each leaves a
 #               verdict in high RAM (0x01 at FF82 for a pass, 0xFF for a
 #               failure). A few dozen are visual and never give a verdict, so
 #               they are listed as failing and stay that way.
+#               Runner: build/rom_test.
+#   mealybug    the mealybug tearoom PPU tests that have a DMG screenshot:
+#               each runs to LD B,B and the picture must match the screenshot
+#               pixel for pixel. Runner: build/screen_test.
+#   blargg      the Blargg ROMs that show their result on screen (halt_bug,
+#               oam_bug) or in timing (instr_timing, mem_timing-2), compared
+#               with their screenshots. Runner: build/screen_test.
 #
 # The collection is downloaded once into roms/testroms/ (ignored by git), from
 # a fixed release and checked against a SHA-256, so every run sees the same
@@ -36,25 +44,33 @@ SHA256="b9a9d7a1075aa35a3d07c07c34974048672d8520dca9e07a50178f5860c3832c"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 suite_name="${1:-}"
-rom_test="${2:-$root/build/rom_test}"
+runner="$2"
 dir="${TESTROMS_DIR:-$root/roms/testroms}"
 release="$dir/$VERSION"
 
 case "$suite_name" in
     microtest)
         rom_dir="gbmicrotest"
-        rom_args=(--microtest)
+        runner="${runner:-$root/build/rom_test}"
+        ;;
+    mealybug)
+        rom_dir="mealybug-tearoom-tests"
+        runner="${runner:-$root/build/screen_test}"
+        ;;
+    blargg)
+        rom_dir="blargg"
+        runner="${runner:-$root/build/screen_test}"
         ;;
     *)
-        echo "Usage: $0 microtest [rom_test binary]" >&2
+        echo "Usage: $0 microtest|mealybug|blargg [runner binary]" >&2
         exit 2
         ;;
 esac
 
 expected_file="$root/tools/$suite_name-expected-failures.txt"
 
-if [ ! -x "$rom_test" ]; then
-    echo "rom_test not found at $rom_test (build it with: make build/rom_test)" >&2
+if [ ! -x "$runner" ]; then
+    echo "runner not found at $runner (build it with make)" >&2
     exit 2
 fi
 
@@ -76,7 +92,12 @@ fetch() {
     fi
 
     mkdir -p "$release"
-    unzip -q -o "$archive" 'gbmicrotest/*' -d "$release"
+    # Only the suites run here: name them one by one, since unzip's wildcards
+    # do not reliably cross directory levels.
+    unzip -Z1 "$archive" |
+        grep -E '^(gbmicrotest|mealybug-tearoom-tests|blargg)/' |
+        tr '\n' '\0' |
+        xargs -0 unzip -q -o "$archive" -d "$release"
     rm -f "$archive"
 }
 
@@ -99,10 +120,42 @@ unexpected_passes=()
 cycle_args=()
 [ -n "${TESTROMS_CYCLES:-}" ] && cycle_args=("${TESTROMS_CYCLES}")
 
-while IFS= read -r rom; do
+# Prints "rom|reference|extra arguments", one ROM per line. Screenshot suites
+# give a reference; microtest ROMs judge themselves and give none.
+list_roms() {
+    case "$suite_name" in
+        microtest)
+            find "$release/$rom_dir" -name '*.gb' | sort | sed 's/$/||/'
+            ;;
+        mealybug)
+            local rom base ref
+            for rom in "$release/$rom_dir"/ppu/*.gb; do
+                base="${rom%.gb}"
+                ref="${base}_dmg_blob.png"
+                [ -f "$ref" ] || ref="${base}_dmg_b.png"
+                # Tests for the CGB alone have no DMG screenshot.
+                [ -f "$ref" ] && echo "$rom|$ref|"
+            done
+            ;;
+        blargg)
+            local b="$release/$rom_dir"
+            echo "$b/halt_bug.gb|$b/halt_bug-dmg-cgb.png|--frames 150"
+            echo "$b/instr_timing/instr_timing.gb|$b/instr_timing/instr_timing-dmg-cgb.png|--frames 150"
+            echo "$b/mem_timing-2/mem_timing.gb|$b/mem_timing-2/mem_timing-dmg-cgb.png|--frames 300"
+            echo "$b/oam_bug/oam_bug.gb|$b/oam_bug/oam_bug-dmg.png|--frames 1500"
+            ;;
+    esac
+}
+
+while IFS='|' read -r rom reference extra; do
     rel="${rom#"$release"/}"
 
-    result="$("$rom_test" "$rom" ${cycle_args[@]+"${cycle_args[@]}"} "${rom_args[@]}" 2>&1 | head -1)"
+    if [ "$suite_name" = microtest ]; then
+        result="$("$runner" "$rom" ${cycle_args[@]+"${cycle_args[@]}"} --microtest 2>&1 | head -1)"
+    else
+        # shellcheck disable=SC2086
+        result="$("$runner" "$rom" "$reference" $extra 2>&1 | head -1)"
+    fi
 
     case "$result" in
         "[PASS]"*)
@@ -120,7 +173,7 @@ while IFS= read -r rom; do
             fi
             ;;
     esac
-done < <(find "$release/$rom_dir" -name '*.gb' | sort)
+done < <(list_roms)
 
 total=$((passed + failed))
 
