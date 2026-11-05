@@ -94,6 +94,9 @@ typedef struct Ppu {
     bool pre_draw;              /* first line after LCD on, before drawing starts */
     bool oam_pulse;             /* the mode 2 interrupt condition, high only
                                    in the last 4 dots of the line before */
+    bool hblank_late;           /* HBlank began in the last 2 dots of its cycle */
+    uint8_t ly153_stage;        /* line 153's LYC comparison: 0 compares 153,
+                                   1 is the gap, 2 compares 0 */
     uint64_t frames;        /* completed frames since reset */
 
     InterruptRegisters *interrupts;
@@ -121,6 +124,15 @@ void ppu_init(Ppu *ppu, InterruptRegisters *interrupts);
 
 /* Back to the reset state; VRAM, OAM and the framebuffer are cleared. */
 void ppu_reset(Ppu *ppu);
+
+/*
+ * Moves a reset PPU to where the boot ROM leaves it when the cartridge starts
+ * running: in VBlank, 58 dots before the first frame, which is dot 398 of
+ * line 153. The two dots past a whole M-cycle are the PPU's alignment to the
+ * CPU clock after the boot ROM; switching the LCD on aligns it to a cycle
+ * instead. Measured with the gbmicrotest power-on and HBlank ROMs.
+ */
+void ppu_enter_boot_phase(Ppu *ppu);
 
 /*
  * VRAM, OAM and the registers FF40-FF45 and FF47-FF4B. `address` must be

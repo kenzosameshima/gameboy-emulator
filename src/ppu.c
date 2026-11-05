@@ -39,14 +39,52 @@ static bool ppu_next_line_has_oam_interrupt(const Ppu *ppu)
     return ppu->ly + 1 <= FIRST_VBLANK_LINE;
 }
 
-/* LY as the CPU sees it: it moves on 4 dots before the line ends. */
+/*
+ * LY as the CPU sees it: it moves on 4 dots before the line ends. On the last
+ * line it reads 0 from its first dot, so 153 is seen only in those 4 dots at
+ * the end of line 152.
+ */
 static uint8_t ppu_visible_ly(const Ppu *ppu)
 {
+    if (ppu->ly == PPU_LINES_PER_FRAME - 1) {
+        return 0;
+    }
+
     if (!ppu->ly_advanced) {
         return ppu->ly;
     }
 
     return (uint8_t)((ppu->ly + 1) % PPU_LINES_PER_FRAME);
+}
+
+/*
+ * The LY the LYC comparison uses. It is LY, except on line 153: the first 4
+ * dots still compare 153, then there is a gap, and from dot 8 it compares 0.
+ */
+static uint8_t ppu_compared_ly(const Ppu *ppu)
+{
+    if (ppu->ly == PPU_LINES_PER_FRAME - 1 && ppu->ly153_stage == 0) {
+        return ppu->ly;
+    }
+
+    return ppu_visible_ly(ppu);
+}
+
+/*
+ * The mode bits STAT reads. They are the mode, except in the last M-cycle of
+ * line 153, which reads as HBlank before line 0 starts in the scan.
+ */
+static unsigned ppu_stat_mode(const Ppu *ppu)
+{
+    if (!ppu_lcd_on(ppu)) {
+        return PPU_MODE_HBLANK;
+    }
+
+    if (ppu->ly == PPU_LINES_PER_FRAME - 1 && ppu->line_dot >= LY_ADVANCE_DOT) {
+        return PPU_MODE_HBLANK;
+    }
+
+    return ppu->mode;
 }
 
 /*
@@ -109,7 +147,7 @@ static bool ppu_oam_write_blocked(const Ppu *ppu)
  */
 static void ppu_update_lyc_flag(Ppu *ppu)
 {
-    ppu->lyc_flag = ppu_visible_ly(ppu) == ppu->lyc;
+    ppu->lyc_flag = ppu_compared_ly(ppu) == ppu->lyc;
 }
 
 /*
@@ -124,14 +162,14 @@ static void ppu_update_stat_line(Ppu *ppu)
         return;
     }
 
-    bool level = (ppu->lyc_flag &&
-                  (ppu->stat & PPU_STAT_LYC_INTERRUPT) != 0) ||
-                 /* The first line after the LCD is switched on reads as
-                  * mode 0 but has not had an HBlank. */
-                 (ppu->mode == PPU_MODE_HBLANK && !ppu->pre_draw &&
-                  (ppu->stat & PPU_STAT_HBLANK_INTERRUPT) != 0) ||
-                 (ppu->mode == PPU_MODE_VBLANK &&
-                  (ppu->stat & PPU_STAT_VBLANK_INTERRUPT) != 0);
+    bool lyc = ppu->lyc_flag && (ppu->stat & PPU_STAT_LYC_INTERRUPT) != 0;
+
+    /* The first line after the LCD is switched on reads as mode 0 but has had
+     * no HBlank. */
+    bool hblank = ppu->mode == PPU_MODE_HBLANK && !ppu->pre_draw &&
+                  (ppu->stat & PPU_STAT_HBLANK_INTERRUPT) != 0;
+    bool vblank = ppu->mode == PPU_MODE_VBLANK &&
+                  (ppu->stat & PPU_STAT_VBLANK_INTERRUPT) != 0;
 
     /*
      * The mode 2 condition is a pulse, not a level held through the scan: it
@@ -139,11 +177,13 @@ static void ppu_update_stat_line(Ppu *ppu)
      * enabling it during the scan does nothing. Line 144 gets one too.
      */
     bool pulse = ppu->oam_pulse && (ppu->stat & PPU_STAT_OAM_INTERRUPT) != 0;
-    bool line = level || pulse;
+    bool line = lyc || hblank || vblank || pulse;
 
     if (line && !ppu->stat_line) {
         /* The pulse edge falls late in its M-cycle; the others do not. */
-        if (level) {
+        if (hblank && !lyc && !vblank && ppu->hblank_late) {
+            interrupts_request_late(ppu->interrupts, INTERRUPT_LCD_STAT);
+        } else if (lyc || hblank || vblank) {
             interrupts_request(ppu->interrupts, INTERRUPT_LCD_STAT);
         } else {
             interrupts_request_late(ppu->interrupts, INTERRUPT_LCD_STAT);
@@ -162,6 +202,21 @@ static void ppu_start_frame(Ppu *ppu)
     ppu->pre_draw = false;
     ppu->ly_advanced = false;
     ppu->oam_pulse = false;
+    ppu->ly153_stage = 0;
+}
+
+void ppu_enter_boot_phase(Ppu *ppu)
+{
+    ppu->ly = PPU_LINES_PER_FRAME - 1;
+    ppu->line_dot = 398;
+    ppu->mode = PPU_MODE_VBLANK;
+    ppu->ly_advanced = false;
+    ppu->ly153_stage = 2;
+    ppu->oam_pulse = false;
+    ppu->window_line = 0;
+
+    ppu_update_lyc_flag(ppu);
+    ppu_update_stat_line(ppu);
 }
 
 void ppu_init(Ppu *ppu, InterruptRegisters *interrupts)
@@ -216,7 +271,7 @@ uint8_t ppu_read(const Ppu *ppu, uint16_t address)
                 0x80 |
                 (ppu->stat & PPU_STAT_WRITE_MASK) |
                 (ppu->lyc_flag ? PPU_STAT_LYC_FLAG : 0) |
-                (ppu_lcd_on(ppu) ? ppu->mode : PPU_MODE_HBLANK)
+                ppu_stat_mode(ppu)
             );
 
         case PPU_SCY_ADDRESS:
@@ -369,6 +424,7 @@ static void ppu_finish_line(Ppu *ppu)
     ppu->ly++;
     ppu->ly_advanced = false;
     ppu->oam_pulse = false;
+    ppu->ly153_stage = 0;
 
     if (ppu->ly == FIRST_VBLANK_LINE) {
         ppu->mode = PPU_MODE_VBLANK;
@@ -428,16 +484,42 @@ void ppu_step(Ppu *ppu, CpuCycles cycles)
                 return;
             }
 
+            /*
+             * The mode changes at drawing_end_dot, which can be anywhere in
+             * the M-cycle that ends at line_dot; a request in its last 2 dots
+             * is met late by a halted CPU.
+             */
             ppu->mode = PPU_MODE_HBLANK;
+            ppu->hblank_late = ppu->line_dot - ppu->drawing_end_dot < 2;
             ppu_update_stat_line(ppu);
         } else {
             /* HBlank and VBlank both last until the end of the line. */
+            if (ppu->ly == PPU_LINES_PER_FRAME - 1) {
+                /* LY already reads 0 here, so the comparison changes twice
+                 * early in the line instead of at its end. */
+                if (ppu->ly153_stage == 0 && ppu->line_dot >= 4) {
+                    ppu->ly153_stage = 1;
+                    ppu->lyc_flag = false;
+                    ppu_update_stat_line(ppu);
+                }
+
+                if (ppu->ly153_stage == 1 && ppu->line_dot >= 8) {
+                    ppu->ly153_stage = 2;
+                    ppu_update_lyc_flag(ppu);
+                    ppu_update_stat_line(ppu);
+                }
+            }
+
             if (!ppu->ly_advanced && ppu->line_dot >= LY_ADVANCE_DOT) {
                 ppu->ly_advanced = true;
 
                 /* LY has moved on but the comparison has not caught up: the
-                 * flag reads 0 until the new line starts. */
-                ppu->lyc_flag = false;
+                 * flag reads 0 until the new line starts. Not on line 153,
+                 * where LY stays 0. */
+                if (ppu->ly != PPU_LINES_PER_FRAME - 1) {
+                    ppu->lyc_flag = false;
+                }
+
                 ppu->oam_pulse = ppu_next_line_has_oam_interrupt(ppu);
                 ppu_update_stat_line(ppu);
             }

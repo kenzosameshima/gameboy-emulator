@@ -41,6 +41,7 @@ static void emulator_reset(Emulator *emulator)
     timer_init(&emulator->timer, &emulator->interrupts);
     timer_power_on(&emulator->timer);
     ppu_init(&emulator->ppu, &emulator->interrupts);
+    ppu_enter_boot_phase(&emulator->ppu);
     dma_init(&emulator->dma, &emulator->bus, &emulator->ppu);
     joypad_init(&emulator->joypad, &emulator->interrupts);
     apu_init(&emulator->apu);

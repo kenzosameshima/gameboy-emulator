@@ -133,11 +133,31 @@ static void test_frame_timing_and_vblank(void)
 
     /* VBlank lasts 10 lines and covers all of them. */
     clear_irqs();
-    run(9 * LINE + 448);
+    run(8 * LINE + 448);
+    assert(read(PPU_LY_ADDRESS) == 152);
+    assert(mode() == PPU_MODE_VBLANK);
+
+    /* LY shows 153 for 4 dots only, then reads 0 for the whole last line. */
+    run(4);
     assert(read(PPU_LY_ADDRESS) == 153);
     assert(mode() == PPU_MODE_VBLANK);
 
-    run(8);
+    run(4);
+    assert(ppu.ly == 153);
+    assert(read(PPU_LY_ADDRESS) == 0);
+    assert(mode() == PPU_MODE_VBLANK);
+
+    run(448);
+    assert(read(PPU_LY_ADDRESS) == 0);
+    assert(mode() == PPU_MODE_VBLANK);
+
+    /* The last M-cycle of the line reads as HBlank. */
+    run(4);
+    assert(read(PPU_LY_ADDRESS) == 0);
+    assert(mode() == PPU_MODE_HBLANK);
+
+    run(4);
+    assert(ppu.ly == 0);
     assert(read(PPU_LY_ADDRESS) == 0);
     assert(mode() == PPU_MODE_OAM_SCAN);
     assert(!irq(INTERRUPT_VBLANK));
@@ -701,6 +721,98 @@ static void test_first_line_after_lcd_on_has_no_hblank(void)
  * after a running CPU does, so the PPU marks the sources that fall late: the
  * mode 2 pulse does, the others do not.
  */
+/*
+ * Line 153 is odd: LY reads 0 from its first dot, STAT reads mode 0 in its
+ * last M-cycle, and the LYC comparison goes 153, then nothing for an M-cycle,
+ * then 0. The figures are gbmicrotest line_153_* ROMs, read on a DMG.
+ */
+static void test_line_153(void)
+{
+    /* LYC = 0: the flag is clear at dot 4 and set from dot 8. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 0);
+    run(152 * LINE + 32);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) == 0);
+    run(LINE - 32 + 4);
+    assert(ppu.ly == 153 && ppu.line_dot == 4);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) == 0);
+    run(4);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+
+    /* It stays set through the end of the line, with mode 0 in the last
+     * M-cycle, and into line 0. */
+    run(440);
+    assert(ppu.line_dot == 448);
+    assert(mode() == PPU_MODE_VBLANK);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+    run(4);
+    assert(mode() == PPU_MODE_HBLANK);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+    run(4);
+    assert(ppu.ly == 0);
+    assert(mode() == PPU_MODE_OAM_SCAN);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+
+    /* LYC = 153: set for the first M-cycle of the line, clear after it. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 153);
+    run(152 * LINE + 452);
+    assert(read(PPU_LY_ADDRESS) == 153);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) == 0);
+    run(4);
+    assert(ppu.ly == 153 && ppu.line_dot == 0);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+    run(4);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) == 0);
+    run(448);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) == 0);
+    assert(mode() == PPU_MODE_HBLANK);
+
+    /* LYC = 0 raises the interrupt on line 153, not when line 0 starts. */
+    setup_quiet();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 0);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_LYC_INTERRUPT);
+    run(152 * LINE + LINE);
+    clear_irqs();
+    run(4);
+    assert(!irq(INTERRUPT_LCD_STAT));
+    run(4);
+    assert(irq(INTERRUPT_LCD_STAT));
+}
+
+/*
+ * A cartridge starts running with the PPU in VBlank, 58 dots before the first
+ * frame: line 153, where LY already reads 0 and equals LYC = 0. The 2 dots
+ * past a whole M-cycle are the PPU's alignment to the CPU clock.
+ */
+static void test_boot_phase(void)
+{
+    setup();
+    ppu_enter_boot_phase(&ppu);
+
+    assert(ppu.ly == 153 && ppu.line_dot == 398);
+    assert(read(PPU_LY_ADDRESS) == 0);
+    assert(mode() == PPU_MODE_VBLANK);
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
+    assert(ppu.frames == 0);
+
+    run(52);
+    assert(mode() == PPU_MODE_VBLANK);
+
+    run(4);
+    assert(mode() == PPU_MODE_HBLANK);
+
+    run(8);
+    assert(ppu.ly == 0 && ppu.line_dot == 6);
+    assert(mode() == PPU_MODE_OAM_SCAN);
+
+    /* The first frame ends with VBlank 144 lines later. */
+    run(144 * LINE - 4);
+    assert(ppu.ly == 144);
+    assert(irq(INTERRUPT_VBLANK));
+    assert(ppu.frames == 1);
+}
+
 static void test_late_requests(void)
 {
     setup();
@@ -712,13 +824,31 @@ static void test_late_requests(void)
     assert(irq(INTERRUPT_LCD_STAT));
     assert((interrupts.late & INTERRUPT_LCD_STAT) != 0);
 
-    setup();
-    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
-    run(248);
-    interrupts.late = 0;
-    run(4);
-    assert(irq(INTERRUPT_LCD_STAT));
-    assert((interrupts.late & INTERRUPT_LCD_STAT) == 0);
+    /*
+     * HBlank begins at dot 252 + SCX, anywhere in its M-cycle, and the request
+     * is late when that is in the last 2 dots of the cycle.
+     */
+    static const struct {
+        uint8_t scx;
+        bool late;
+    } hblank[] = {
+        { 0, true }, { 1, false }, { 2, false }, { 3, true },
+        { 4, true }, { 5, false }, { 6, false }, { 7, true }
+    };
+
+    for (size_t i = 0; i < sizeof(hblank) / sizeof(hblank[0]); i++) {
+        setup_quiet();
+        ppu_write(&ppu, PPU_SCX_ADDRESS, hblank[i].scx);
+        ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+        clear_irqs();
+
+        while (!irq(INTERRUPT_LCD_STAT)) {
+            interrupts.late = 0;
+            run(4);
+        }
+
+        assert(((interrupts.late & INTERRUPT_LCD_STAT) != 0) == hblank[i].late);
+    }
 
     setup();
     run(144 * LINE - 4);
@@ -869,6 +999,8 @@ int main(void)
     test_mode2_pulse();
     test_stat_write_glitch();
     test_first_line_after_lcd_on_has_no_hblank();
+    test_line_153();
+    test_boot_phase();
     test_late_requests();
     test_mode3_length();
     test_register_access();
