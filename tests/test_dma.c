@@ -90,6 +90,11 @@ static void test_register_reads_back(void)
     TestMachine m;
 
     machine_init(&m);
+
+    /* The boot ROM leaves FF46 at 0xFF, and nothing is copying. */
+    assert(bus_read(&m.bus, DMA_ADDRESS) == 0xFF);
+    assert(!dma_is_copying(&m.dma));
+
     bus_write(&m.bus, DMA_ADDRESS, 0xC1);
     assert(bus_read(&m.bus, DMA_ADDRESS) == 0xC1);
     assert(dma_read(&m.dma) == 0xC1);
