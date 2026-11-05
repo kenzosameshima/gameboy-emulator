@@ -813,6 +813,73 @@ static void test_boot_phase(void)
     assert(ppu.frames == 1);
 }
 
+/* Dot of the first tick at which line 0 is in HBlank, with the window set up. */
+static unsigned window_hblank_start(uint8_t lcdc, uint8_t wy, uint8_t wx)
+{
+    setup();
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, 0x00);
+    ppu_write(&ppu, PPU_WY_ADDRESS, wy);
+    ppu_write(&ppu, PPU_WX_ADDRESS, wx);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, lcdc);
+
+    while (mode() != PPU_MODE_DRAWING) {
+        run(4);
+    }
+
+    while (mode() != PPU_MODE_HBLANK) {
+        run(4);
+        assert(ppu.line_dot < 456);
+    }
+
+    return ppu.line_dot;
+}
+
+/*
+ * Starting the window restarts the fetcher and lengthens mode 3 by 3 dots,
+ * whatever WX from 0 to 15 (the gbmicrotest win ROMs measure it at 2 to 4).
+ * Nothing changes if the window is off, below the line, past the right edge,
+ * or hidden because the background is off.
+ */
+static void test_window_lengthens_mode3(void)
+{
+    enum {
+        LCD_ON = 0x91,
+        WINDOW_ON = 0x20
+    };
+
+    assert(window_hblank_start(LCD_ON, 0, 7) == 252);
+    assert(window_hblank_start(LCD_ON | WINDOW_ON, 0, 7) == 256);
+
+    /* 252 + 3 = 255 reaches the tick that ends at 256 for every WX. */
+    for (uint8_t wx = 0; wx <= 15; wx++) {
+        assert(window_hblank_start(LCD_ON | WINDOW_ON, 0, wx) == 256);
+    }
+
+    /* The window is not on this line, or not drawn at all. */
+    assert(window_hblank_start(LCD_ON | WINDOW_ON, 1, 7) == 252);
+    assert(window_hblank_start(LCD_ON | WINDOW_ON, 0, 167) == 252);
+    assert(window_hblank_start((LCD_ON | WINDOW_ON) & ~PPU_LCDC_BG_ENABLE,
+                               0, 7) == 252);
+
+    /* It adds to SCX: 252 + 3 + 3 = 258 ends in the tick at 260. */
+    setup();
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, 0x00);
+    ppu_write(&ppu, PPU_SCX_ADDRESS, 3);
+    ppu_write(&ppu, PPU_WY_ADDRESS, 0);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 7);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, LCD_ON | WINDOW_ON);
+
+    while (mode() != PPU_MODE_DRAWING) {
+        run(4);
+    }
+
+    while (mode() != PPU_MODE_HBLANK) {
+        run(4);
+    }
+
+    assert(ppu.line_dot == 260);
+}
+
 static void test_late_requests(void)
 {
     setup();
@@ -1001,6 +1068,7 @@ int main(void)
     test_first_line_after_lcd_on_has_no_hblank();
     test_line_153();
     test_boot_phase();
+    test_window_lengthens_mode3();
     test_late_requests();
     test_mode3_length();
     test_register_access();

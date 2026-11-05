@@ -269,12 +269,22 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
 {
     enum {
         BASE_DOTS = 172,
+        WINDOW_DOTS = 3,
         SPRITE_DOTS = 6,
         SPRITE_OVERLAP = 3,
         RIGHT_EDGE_X = 168
     };
 
     unsigned dots = BASE_DOTS + (ppu->scx & 7);
+
+    /*
+     * Starting the window restarts the fetcher. The gbmicrotest win ROMs put
+     * the end of mode 3 2 to 4 dots later for every WX from 0 to 15; 3 is the
+     * same 6 minus 3 a sprite costs.
+     */
+    if ((ppu->lcdc & PPU_LCDC_BG_ENABLE) != 0 && window_visible(ppu)) {
+        dots += WINDOW_DOTS;
+    }
 
     if ((ppu->lcdc & PPU_LCDC_OBJ_ENABLE) == 0) {
         return dots;
