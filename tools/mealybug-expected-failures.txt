@@ -2,11 +2,10 @@
 # per line relative to the release. tools/testroms.sh mealybug exits 1 only for
 # a failure that is not listed here, and reports listed ROMs that now pass.
 #
-# Baseline when the runner was added: 1 of 24 DMG tests pass. They all change
-# a register during mode 3, which the renderer does not yet follow: it draws
-# each line in one go when drawing starts.
-mealybug-tearoom-tests/ppu/m3_bgp_change.gb
-mealybug-tearoom-tests/ppu/m3_bgp_change_sprites.gb
+# 4 of 24 DMG tests pass. Palettes, the BG and OBJ enable bits and the sprite
+# stalls follow the pixel they apply to; the rest change something the renderer
+# still reads once at the start of drawing: scroll, window position, tile map
+# and tile data selection, sprite size.
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_en_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_map_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_obj_en_change.gb
@@ -18,7 +17,6 @@ mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_win_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple_wx.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_win_map_change.gb
-mealybug-tearoom-tests/ppu/m3_obp0_change.gb
 mealybug-tearoom-tests/ppu/m3_scx_high_5_bits.gb
 mealybug-tearoom-tests/ppu/m3_scx_low_3_bits.gb
 mealybug-tearoom-tests/ppu/m3_scy_change.gb

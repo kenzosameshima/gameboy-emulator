@@ -26,6 +26,20 @@ static void emulator_tick(void *context, CpuCycles cycles)
 }
 
 
+/* The boot ROM leaves the cartridge's logo in VRAM. */
+static void emulator_load_boot_vram(Emulator *emulator)
+{
+    uint8_t logo[PPU_LOGO_SIZE];
+
+    for (unsigned i = 0; i < PPU_LOGO_SIZE; i++) {
+        logo[i] = emulator->cartridge.rom == NULL
+            ? 0
+            : cartridge_read(&emulator->cartridge, (uint16_t)(0x0104 + i));
+    }
+
+    ppu_load_boot_vram(&emulator->ppu, logo);
+}
+
 /*
  * Starts a new machine execution state. Does not touch the cartridge or
  * the serial output callback.
@@ -42,6 +56,7 @@ static void emulator_reset(Emulator *emulator)
     timer_power_on(&emulator->timer);
     ppu_init(&emulator->ppu, &emulator->interrupts);
     ppu_enter_boot_phase(&emulator->ppu);
+    emulator_load_boot_vram(emulator);
     dma_init(&emulator->dma, &emulator->bus, &emulator->ppu);
     joypad_init(&emulator->joypad, &emulator->interrupts);
     apu_init(&emulator->apu);

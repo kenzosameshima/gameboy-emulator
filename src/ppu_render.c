@@ -33,7 +33,11 @@ enum {
     SPRITE_BEHIND_BG = 0x80,
     SPRITE_Y_FLIP = 0x40,
     SPRITE_X_FLIP = 0x20,
-    SPRITE_PALETTE_1 = 0x10
+    SPRITE_PALETTE_1 = 0x10,
+
+    /* Where drawing starts, and the dot pixel 0 comes out at (before SCX). */
+    DRAW_START_DOT = 80,
+    FIRST_PIXEL_DOT = 92
 };
 
 static uint8_t tile_pixel(const uint8_t *tile, unsigned row, unsigned column)
@@ -51,9 +55,13 @@ static uint8_t palette_shade(uint8_t palette, uint8_t color)
 }
 
 /* Tile data for a background or window tile number. */
-static const uint8_t *background_tile(const Ppu *ppu, uint8_t number)
+static const uint8_t *background_tile(
+    const Ppu *ppu,
+    uint8_t lcdc,
+    uint8_t number
+)
 {
-    if ((ppu->lcdc & PPU_LCDC_TILE_DATA_UNSIGNED) != 0) {
+    if ((lcdc & PPU_LCDC_TILE_DATA_UNSIGNED) != 0) {
         return &ppu->vram[(size_t)number * TILE_BYTES];
     }
 
@@ -62,6 +70,7 @@ static const uint8_t *background_tile(const Ppu *ppu, uint8_t number)
 
 static uint8_t tilemap_pixel(
     const Ppu *ppu,
+    uint8_t lcdc,
     size_t map_offset,
     unsigned x,
     unsigned y
@@ -71,12 +80,12 @@ static uint8_t tilemap_pixel(
         map_offset + (y / 8) * TILEMAP_COLUMNS + (x / 8)
     ];
 
-    return tile_pixel(background_tile(ppu, number), y % 8, x % 8);
+    return tile_pixel(background_tile(ppu, lcdc, number), y % 8, x % 8);
 }
 
-static bool window_visible(const Ppu *ppu)
+static bool window_visible(const Ppu *ppu, uint8_t lcdc)
 {
-    return (ppu->lcdc & PPU_LCDC_WINDOW_ENABLE) != 0 &&
+    return (lcdc & PPU_LCDC_WINDOW_ENABLE) != 0 &&
            ppu->ly >= ppu->wy &&
            ppu->wx <= WINDOW_MAX_WX;
 }
@@ -87,10 +96,11 @@ static bool window_visible(const Ppu *ppu)
  */
 static bool render_background(
     const Ppu *ppu,
+    uint8_t lcdc,
     uint8_t colors[PPU_SCREEN_WIDTH]
 )
 {
-    if ((ppu->lcdc & PPU_LCDC_BG_ENABLE) == 0) {
+    if ((lcdc & PPU_LCDC_BG_ENABLE) == 0) {
         /* With the background off, it and the window are blank. */
         for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
             colors[x] = 0;
@@ -100,14 +110,14 @@ static bool render_background(
     }
 
     size_t background_map =
-        (ppu->lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
+        (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
             ? TILEMAP_HIGH_OFFSET
             : TILEMAP_LOW_OFFSET;
     size_t window_map =
-        (ppu->lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
+        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
             ? TILEMAP_HIGH_OFFSET
             : TILEMAP_LOW_OFFSET;
-    bool window = window_visible(ppu);
+    bool window = window_visible(ppu, lcdc);
     int window_start = (int)ppu->wx - WINDOW_X_OFFSET;
     unsigned background_y = (unsigned)(ppu->ly + ppu->scy) & 0xFF;
 
@@ -115,6 +125,7 @@ static bool render_background(
         if (window && (int)x >= window_start) {
             colors[x] = tilemap_pixel(
                 ppu,
+                lcdc,
                 window_map,
                 (unsigned)((int)x - window_start),
                 ppu->window_line
@@ -122,6 +133,7 @@ static bool render_background(
         } else {
             colors[x] = tilemap_pixel(
                 ppu,
+                lcdc,
                 background_map,
                 (x + ppu->scx) & 0xFF,
                 background_y
@@ -146,10 +158,11 @@ typedef struct LineSprite {
  */
 static unsigned select_sprites(
     const Ppu *ppu,
+    uint8_t lcdc,
     LineSprite sprites[SPRITES_PER_LINE]
 )
 {
-    unsigned height = (ppu->lcdc & PPU_LCDC_OBJ_TALL) != 0 ? 16 : 8;
+    unsigned height = (lcdc & PPU_LCDC_OBJ_TALL) != 0 ? 16 : 8;
     unsigned count = 0;
 
     for (unsigned i = 0; i < SPRITE_COUNT && count < SPRITES_PER_LINE; i++) {
@@ -194,27 +207,114 @@ static unsigned select_sprites(
     return count;
 }
 
+/*
+ * How many dots fetching each sprite stalls the pixels for: 6, and for the
+ * first sprite over each 8-pixel column of the picture another
+ * max(0, 5 - (X + SCX) mod 8). Sprites at X 168 and beyond are never fetched.
+ * Returns the total.
+ */
+static unsigned sprite_stalls(
+    const Ppu *ppu,
+    const LineSprite sprites[SPRITES_PER_LINE],
+    unsigned count,
+    unsigned stalls[SPRITES_PER_LINE]
+)
+{
+    enum {
+        SPRITE_DOTS = 6,
+        RIGHT_EDGE_X = 168
+    };
+
+    unsigned total = 0;
+    unsigned previous_column = (unsigned)-1;
+
+    for (unsigned i = 0; i < count; i++) {
+        /* LineSprite.x is the screen column, OAM X minus 8. */
+        unsigned oam_x = (unsigned)(sprites[i].x + SPRITE_X_OFFSET);
+
+        stalls[i] = 0;
+
+        if (oam_x >= RIGHT_EDGE_X) {
+            continue;
+        }
+
+        unsigned offset = oam_x + ppu->scx;
+        unsigned column = offset >> 3;
+
+        stalls[i] = SPRITE_DOTS;
+
+        /* The first sprite over a background tile waits for that tile's
+         * fetch to line up with it. */
+        if (column != previous_column) {
+            unsigned alignment = offset & 7;
+
+            stalls[i] += alignment < 5 ? 5 - alignment : 0;
+            previous_column = column;
+        }
+
+        total += stalls[i];
+    }
+
+    return total;
+}
+
+/*
+ * The dot of the line that each pixel comes out at: pixel 0 at 92 plus SCX
+ * mod 8, one per dot, and every sprite fetched at or before it adds its stall.
+ */
+static void pixel_dots(
+    const Ppu *ppu,
+    const LineSprite sprites[SPRITES_PER_LINE],
+    const unsigned stalls[SPRITES_PER_LINE],
+    unsigned count,
+    unsigned dots[PPU_SCREEN_WIDTH]
+)
+{
+    unsigned delay = 0;
+    unsigned next = 0;
+
+    for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
+        while (next < count && sprites[next].x <= (int)x) {
+            delay += stalls[next++];
+        }
+
+        dots[x] = FIRST_PIXEL_DOT + (ppu->scx & 7) + x + delay;
+    }
+}
+
 static void render_sprites(
     Ppu *ppu,
+    const LineSprite sprites[SPRITES_PER_LINE],
+    unsigned count,
+    const unsigned dots[PPU_SCREEN_WIDTH],
     const uint8_t background_colors[PPU_SCREEN_WIDTH],
     uint8_t *line
 )
 {
-    LineSprite sprites[SPRITES_PER_LINE];
-    unsigned count = select_sprites(ppu, sprites);
     bool claimed[PPU_SCREEN_WIDTH] = {false};
 
     for (unsigned i = 0; i < count; i++) {
         const LineSprite *sprite = &sprites[i];
         const uint8_t *tile = &ppu->vram[(size_t)sprite->tile * TILE_BYTES];
-        uint8_t palette = (sprite->flags & SPRITE_PALETTE_1) != 0
-            ? ppu->obp1
-            : ppu->obp0;
+
+
+        PpuLoggedRegister palette_register =
+            (sprite->flags & SPRITE_PALETTE_1) != 0
+                ? PPU_LOGGED_OBP1
+                : PPU_LOGGED_OBP0;
 
         for (unsigned column = 0; column < 8; column++) {
             int x = sprite->x + (int)column;
 
             if (x < 0 || x >= PPU_SCREEN_WIDTH || claimed[x]) {
+                continue;
+            }
+
+            /* The OBJ layer and the palette are those at the pixel's dot. */
+            unsigned dot = dots[x];
+
+            if ((ppu_register_at(ppu, PPU_LOGGED_LCDC, dot) &
+                 PPU_LCDC_OBJ_ENABLE) == 0) {
                 continue;
             }
 
@@ -235,7 +335,10 @@ static void render_sprites(
                 continue;
             }
 
-            line[x] = palette_shade(palette, color);
+            line[x] = palette_shade(
+                ppu_register_at(ppu, palette_register, dot),
+                color
+            );
         }
     }
 }
@@ -246,19 +349,43 @@ void ppu_render_scanline(Ppu *ppu)
         return;
     }
 
+    /*
+     * The maps, scroll, window and sprites are those at the start of drawing;
+     * the BG and OBJ enable bits and the palettes are those at each pixel's
+     * own dot.
+     */
+    uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];
     uint8_t *line = &ppu->framebuffer[ppu->ly * PPU_SCREEN_WIDTH];
-    bool window_drawn = render_background(ppu, background_colors);
+    bool window_drawn = render_background(ppu, lcdc, background_colors);
+
+    /* Sprites are fetched, and stall the pixels, only if OBJ was on at the
+     * start of drawing. */
+    LineSprite sprites[SPRITES_PER_LINE];
+    unsigned stalls[SPRITES_PER_LINE];
+    unsigned count = 0;
+    unsigned dots[PPU_SCREEN_WIDTH];
+
+    if ((lcdc & PPU_LCDC_OBJ_ENABLE) != 0) {
+        count = select_sprites(ppu, lcdc, sprites);
+        sprite_stalls(ppu, sprites, count, stalls);
+    }
+
+    pixel_dots(ppu, sprites, stalls, count, dots);
 
     for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
-        line[x] = (ppu->lcdc & PPU_LCDC_BG_ENABLE) != 0
-            ? palette_shade(ppu->bgp, background_colors[x])
+        unsigned dot = dots[x];
+
+        line[x] = (ppu_register_at(ppu, PPU_LOGGED_LCDC, dot) &
+                   PPU_LCDC_BG_ENABLE) != 0
+            ? palette_shade(
+                ppu_register_at(ppu, PPU_LOGGED_BGP, dot),
+                background_colors[x]
+            )
             : 0;
     }
 
-    if ((ppu->lcdc & PPU_LCDC_OBJ_ENABLE) != 0) {
-        render_sprites(ppu, background_colors, line);
-    }
+    render_sprites(ppu, sprites, count, dots, background_colors, line);
 
     if (window_drawn) {
         ppu->window_line++;
@@ -270,9 +397,7 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
     enum {
         BASE_DOTS = 172,
         WINDOW_DOTS = 3,
-        SPRITE_DOTS = 6,
-        SPRITE_OVERLAP = 3,
-        RIGHT_EDGE_X = 168
+        SPRITE_OVERLAP = 3
     };
 
     unsigned dots = BASE_DOTS + (ppu->scx & 7);
@@ -282,7 +407,8 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
      * the end of mode 3 2 to 4 dots later for every WX from 0 to 15; 3 is the
      * same 6 minus 3 a sprite costs.
      */
-    if ((ppu->lcdc & PPU_LCDC_BG_ENABLE) != 0 && window_visible(ppu)) {
+    if ((ppu->lcdc & PPU_LCDC_BG_ENABLE) != 0 &&
+        window_visible(ppu, ppu->lcdc)) {
         dots += WINDOW_DOTS;
     }
 
@@ -291,32 +417,9 @@ unsigned ppu_drawing_dots(const Ppu *ppu)
     }
 
     LineSprite sprites[SPRITES_PER_LINE];
-    unsigned count = select_sprites(ppu, sprites);
-    unsigned penalty = 0;
-    unsigned previous_column = (unsigned)-1;
-
-    for (unsigned i = 0; i < count; i++) {
-        /* LineSprite.x is the screen column, OAM X minus 8. */
-        unsigned oam_x = (unsigned)(sprites[i].x + SPRITE_X_OFFSET);
-
-        if (oam_x >= RIGHT_EDGE_X) {
-            continue;
-        }
-
-        unsigned offset = oam_x + ppu->scx;
-        unsigned column = offset >> 3;
-
-        penalty += SPRITE_DOTS;
-
-        /* The first sprite over a background tile waits for that tile's
-         * fetch to line up with it. */
-        if (column != previous_column) {
-            unsigned alignment = offset & 7;
-
-            penalty += alignment < 5 ? 5 - alignment : 0;
-            previous_column = column;
-        }
-    }
+    unsigned stalls[SPRITES_PER_LINE];
+    unsigned count = select_sprites(ppu, ppu->lcdc, sprites);
+    unsigned penalty = sprite_stalls(ppu, sprites, count, stalls);
 
     /*
      * Turning the OBJ layer on shortens mode 3 by 3 dots even with no sprite

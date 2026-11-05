@@ -14,7 +14,11 @@ enum {
     LY_ADVANCE_DOT = 452,
 
     /* The scan's last cycle: OAM can be written and VRAM cannot be read. */
-    OAM_SCAN_LAST_CYCLE_DOT = 76
+    OAM_SCAN_LAST_CYCLE_DOT = 76,
+
+    /* A register write reaches the pixels this many dots into its M-cycle. */
+    PALETTE_WRITE_DOT_OFFSET = 1,
+    LCDC_WRITE_DOT_OFFSET = 2
 };
 
 static bool ppu_lcd_on(const Ppu *ppu)
@@ -193,6 +197,74 @@ static void ppu_update_stat_line(Ppu *ppu)
     ppu->stat_line = line;
 }
 
+/* Starts the log of register writes for the line that begins now. */
+static void ppu_begin_line_log(Ppu *ppu)
+{
+    ppu->line_registers[PPU_LOGGED_LCDC] = ppu->lcdc;
+    ppu->line_registers[PPU_LOGGED_BGP] = ppu->bgp;
+    ppu->line_registers[PPU_LOGGED_OBP0] = ppu->obp0;
+    ppu->line_registers[PPU_LOGGED_OBP1] = ppu->obp1;
+    ppu->write_count = 0;
+}
+
+static void ppu_log_entry(
+    Ppu *ppu,
+    unsigned dot,
+    PpuLoggedRegister reg,
+    uint8_t value
+)
+{
+    if (ppu->write_count < PPU_WRITE_LOG_SIZE) {
+        PpuRegisterWrite *write = &ppu->writes[ppu->write_count++];
+
+        write->dot = (uint16_t)dot;
+        write->reg = (uint8_t)reg;
+        write->value = value;
+    }
+}
+
+/*
+ * Records a write for the pixels still to come. A palette write glitches for
+ * one dot: it reads as the old and the new value ORed together, then as the
+ * new one, which is why the pixel where a palette change starts and the one
+ * where its undoing starts are not the same number of dots apart as the
+ * writes.
+ */
+static void ppu_log_write(
+    Ppu *ppu,
+    PpuLoggedRegister reg,
+    uint8_t old_value,
+    uint8_t value,
+    bool palette
+)
+{
+    if (palette) {
+        unsigned dot = ppu->line_dot + PALETTE_WRITE_DOT_OFFSET;
+
+        ppu_log_entry(ppu, dot, reg, (uint8_t)(old_value | value));
+        ppu_log_entry(ppu, dot + 1, reg, value);
+    } else {
+        ppu_log_entry(ppu, ppu->line_dot + LCDC_WRITE_DOT_OFFSET, reg, value);
+    }
+}
+
+uint8_t ppu_register_at(
+    const Ppu *ppu,
+    PpuLoggedRegister reg,
+    unsigned dot
+)
+{
+    uint8_t value = ppu->line_registers[reg];
+
+    for (unsigned i = 0; i < ppu->write_count; i++) {
+        if (ppu->writes[i].reg == reg && ppu->writes[i].dot <= dot) {
+            value = ppu->writes[i].value;
+        }
+    }
+
+    return value;
+}
+
 static void ppu_start_frame(Ppu *ppu)
 {
     ppu->ly = 0;
@@ -203,6 +275,7 @@ static void ppu_start_frame(Ppu *ppu)
     ppu->ly_advanced = false;
     ppu->oam_pulse = false;
     ppu->ly153_stage = 0;
+    ppu_begin_line_log(ppu);
 }
 
 void ppu_enter_boot_phase(Ppu *ppu)
@@ -214,9 +287,56 @@ void ppu_enter_boot_phase(Ppu *ppu)
     ppu->ly153_stage = 2;
     ppu->oam_pulse = false;
     ppu->window_line = 0;
+    ppu_begin_line_log(ppu);
 
     ppu_update_lyc_flag(ppu);
     ppu_update_stat_line(ppu);
+}
+
+void ppu_load_boot_vram(Ppu *ppu, const uint8_t logo[PPU_LOGO_SIZE])
+{
+    /* The (R) symbol, one row per byte, in the boot ROM at 00D8. */
+    static const uint8_t registered[8] = {
+        0x3C, 0x42, 0xB9, 0xA5, 0xB9, 0xA5, 0x42, 0x3C
+    };
+
+    /*
+     * The boot ROM expands each nibble of the logo to a byte by doubling
+     * every bit, writes it as two identical rows of a tile, and leaves the
+     * second bit plane of those rows at 0.
+     */
+    unsigned tile_byte = 0x10;
+
+    for (unsigned i = 0; i < PPU_LOGO_SIZE; i++) {
+        for (unsigned half = 0; half < 2; half++) {
+            unsigned nibble = half == 0 ? logo[i] >> 4 : logo[i] & 0x0F;
+            uint8_t row = 0;
+
+            for (unsigned bit = 0; bit < 4; bit++) {
+                unsigned set = (nibble >> (3 - bit)) & 1;
+
+                row = (uint8_t)((row << 2) | (set != 0 ? 0x03 : 0x00));
+            }
+
+            for (unsigned copy = 0; copy < 2; copy++) {
+                ppu->vram[tile_byte] = row;
+                tile_byte += 2;
+            }
+        }
+    }
+
+    for (unsigned i = 0; i < sizeof(registered); i++) {
+        ppu->vram[tile_byte] = registered[i];
+        tile_byte += 2;
+    }
+
+    /* Tiles 1 to 12, then the (R), on map row 8 and 13 to 24 on row 9. */
+    for (unsigned i = 0; i < 12; i++) {
+        ppu->vram[0x1904 + i] = (uint8_t)(1 + i);
+        ppu->vram[0x1924 + i] = (uint8_t)(13 + i);
+    }
+
+    ppu->vram[0x1910] = 0x19;
 }
 
 void ppu_init(Ppu *ppu, InterruptRegisters *interrupts)
@@ -350,6 +470,7 @@ void ppu_write(Ppu *ppu, uint16_t address, uint8_t value)
 
     switch (address) {
         case PPU_LCDC_ADDRESS:
+            ppu_log_write(ppu, PPU_LOGGED_LCDC, ppu->lcdc, value, false);
             ppu_write_lcdc(ppu, value);
             break;
 
@@ -386,14 +507,17 @@ void ppu_write(Ppu *ppu, uint16_t address, uint8_t value)
             break;
 
         case PPU_BGP_ADDRESS:
+            ppu_log_write(ppu, PPU_LOGGED_BGP, ppu->bgp, value, true);
             ppu->bgp = value;
             break;
 
         case PPU_OBP0_ADDRESS:
+            ppu_log_write(ppu, PPU_LOGGED_OBP0, ppu->obp0, value, true);
             ppu->obp0 = value;
             break;
 
         case PPU_OBP1_ADDRESS:
+            ppu_log_write(ppu, PPU_LOGGED_OBP1, ppu->obp1, value, true);
             ppu->obp1 = value;
             break;
 
@@ -425,6 +549,7 @@ static void ppu_finish_line(Ppu *ppu)
     ppu->ly_advanced = false;
     ppu->oam_pulse = false;
     ppu->ly153_stage = 0;
+    ppu_begin_line_log(ppu);
 
     if (ppu->ly == FIRST_VBLANK_LINE) {
         ppu->mode = PPU_MODE_VBLANK;
@@ -447,7 +572,6 @@ static void ppu_start_drawing(Ppu *ppu)
     ppu->mode = PPU_MODE_DRAWING;
     ppu->drawing_end_dot =
         (uint16_t)(OAM_SCAN_END_DOT + ppu_drawing_dots(ppu));
-    ppu_render_scanline(ppu);
     ppu_update_stat_line(ppu);
 }
 
@@ -489,6 +613,8 @@ void ppu_step(Ppu *ppu, CpuCycles cycles)
              * the M-cycle that ends at line_dot; a request in its last 2 dots
              * is met late by a halted CPU.
              */
+            ppu_render_scanline(ppu);
+
             ppu->mode = PPU_MODE_HBLANK;
             ppu->hblank_late = ppu->line_dot - ppu->drawing_end_dot < 2;
             ppu_update_stat_line(ppu);

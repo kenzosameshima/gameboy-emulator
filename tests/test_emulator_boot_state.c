@@ -117,10 +117,81 @@ static void test_io_registers_at_entry(void)
     }
 }
 
+/*
+ * The boot ROM leaves the cartridge's logo in VRAM, so a ROM that reads
+ * VRAM before it writes any sees it: tile 1 is the first rows of the logo,
+ * tile 25 is the (R), and tile map rows 8 and 9 point at them.
+ */
+static void test_vram_at_entry(void)
+{
+    static const uint8_t logo_start[4] = { 0xCE, 0xED, 0x66, 0x66 };
+    static const uint8_t addresses[][2] = {
+        { 0x80, 0x10 }, { 0x80, 0x11 }, { 0x80, 0x12 }, { 0x80, 0x14 },
+        { 0x80, 0x1C }, { 0x81, 0x90 }, { 0x81, 0x92 }, { 0x99, 0x04 },
+        { 0x99, 0x10 }, { 0x99, 0x2F }, { 0x98, 0x00 }
+    };
+    static const uint8_t expected[] = {
+        0xF0, 0x00, 0xF0, 0xFC, 0xF3, 0x3C, 0x42, 0x01, 0x19, 0x18, 0x00
+    };
+    static uint8_t rom[ROM_SIZE];
+    uint8_t code[128];
+    size_t size = 0;
+
+    /* VRAM is unreadable while the LCD draws, so switch it off first. */
+    code[size++] = 0xAF;                                /* XOR A */
+    code[size++] = 0xE0;                                /* LDH [LCDC],A */
+    code[size++] = 0x40;
+
+    for (size_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++) {
+        const uint8_t send[] = {
+            0xFA, addresses[i][1], addresses[i][0],     /* LD A,[address] */
+            0xE0, 0x01,                                 /* LDH [SB],A */
+            0x3E, 0x81, 0xE0, 0x02                      /* start a transfer */
+        };
+
+        memcpy(code + size, send, sizeof(send));
+        size += sizeof(send);
+    }
+
+    code[size++] = 0x18;                                /* spin */
+    code[size++] = 0xFE;
+
+    /* The program does not fit before the header, so it jumps past it. */
+    memset(rom, 0, sizeof(rom));
+    rom[0x0100] = 0xC3;
+    rom[0x0101] = 0x50;
+    rom[0x0102] = 0x01;
+    memcpy(rom + 0x0104, logo_start, sizeof(logo_start));
+    memcpy(rom + 0x0150, code, size);
+    test_write_file(rom_path, rom, ROM_SIZE);
+
+    Emulator *emulator = emulator_create();
+    SerialLog log;
+
+    assert(emulator != NULL);
+    memset(&log, 0, sizeof(log));
+    emulator_set_serial_output(emulator, log_serial, &log);
+    assert(emulator_load_rom(emulator, rom_path) == EMULATOR_OK);
+    assert(emulator_run_cycles(emulator, 20000) == EMULATOR_OK);
+    emulator_destroy(emulator);
+
+    assert(log.length == sizeof(expected));
+
+    for (size_t i = 0; i < sizeof(expected); i++) {
+        if (log.bytes[i] != expected[i]) {
+            fprintf(stderr, "entry %zu: got %02X, want %02X\n", i,
+                    log.bytes[i], expected[i]);
+        }
+
+        assert(log.bytes[i] == expected[i]);
+    }
+}
+
 int main(void)
 {
     test_div_at_entry();
     test_io_registers_at_entry();
+    test_vram_at_entry();
 
     assert(remove(rom_path) == 0);
 

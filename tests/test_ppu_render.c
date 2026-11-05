@@ -608,6 +608,142 @@ static void test_lcd_off_blanks_the_screen(void)
     expect_blank(0, 0, 160, 144, 0);
 }
 
+/* Steps to dot `dot` of line `ly`, in M-cycles of 4 dots. */
+static void run_to(unsigned ly, unsigned dot)
+{
+    while (ppu.ly != ly || ppu.line_dot != dot) {
+        ppu_step(&ppu, 4);
+    }
+}
+
+static void finish_frame(void)
+{
+    while (ppu.ly != 0 || ppu.line_dot >= 4) {
+        ppu_step(&ppu, 4);
+    }
+}
+
+/*
+ * Registers written while a line is drawn change the pixels still to come.
+ * Pixel x comes out at dot 92 + x, and a palette write made in the M-cycle
+ * that starts at dot D takes hold at D + 1; for that one dot it reads as the
+ * old and the new value ORed, so setting a palette starts one pixel earlier
+ * than undoing it would.
+ */
+static void test_palette_written_during_a_line(void)
+{
+    begin();
+    put_solid_tile(0, 1);
+    ppu_write(&ppu, PPU_BGP_ADDRESS, 0x04);     /* color 1 is shade 1 */
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 100);
+    ppu_write(&ppu, PPU_BGP_ADDRESS, 0x08);     /* shade 2; glitch is 0x0C */
+    run_to(1, 112);
+    ppu_write(&ppu, PPU_BGP_ADDRESS, 0x04);
+    finish_frame();
+
+    /* Dot 101 is pixel 9: the ORed value, shade 3. */
+    assert(pixel(8, 1) == 1);
+    assert(pixel(9, 1) == 3);
+    assert(pixel(10, 1) == 2);
+
+    /* The undoing glitches at dot 113, pixel 21, then restores shade 1. */
+    assert(pixel(20, 1) == 2);
+    assert(pixel(21, 1) == 3);
+    assert(pixel(22, 1) == 1);
+
+    /* The lines around it are untouched. */
+    assert(pixel(10, 0) == 1);
+    assert(pixel(10, 2) == 1);
+}
+
+/* A sprite fetch stalls the pixels from its position on, so they come out
+ * later and see palette writes that the unstalled ones would not. */
+static void test_sprite_stall_delays_its_pixels(void)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_sprite(0, 17, 8, 1, 0);                 /* x = 0, row 1 is line 1 */
+    ppu_write(&ppu, PPU_OBP0_ADDRESS, 0x04);    /* color 1 is shade 1 */
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | OBJ_ON));
+
+    run_to(1, 100);
+    ppu_write(&ppu, PPU_OBP0_ADDRESS, 0x08);    /* shade 2 from dot 102 */
+    finish_frame();
+
+    /*
+     * A sprite at OAM X = 8 costs 6 + 5 = 11 dots, so its pixels come out at
+     * dots 103 to 110, all after the write. Without the stall, pixel 0 would
+     * have come out at dot 92 and still been shade 1.
+     */
+    for (unsigned x = 0; x < 8; x++) {
+        assert(pixel(x, 1) == 2);
+    }
+}
+
+/* LCDC takes hold 2 dots into its M-cycle, one more than a palette. */
+static void test_lcdc_written_during_a_line(void)
+{
+    begin();
+    put_solid_tile(0, 3);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 100);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | TILES_UNSIGNED));
+    finish_frame();
+
+    /* Dot 102 is pixel 10: from there the background is off. */
+    assert(pixel(9, 1) == 3);
+    assert(pixel(10, 1) == 0);
+}
+
+/*
+ * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
+ * with only the low bit plane set and each row twice, the (R) symbol in tile
+ * 25, and the tile map rows that show them. The bytes are the well known
+ * VRAM contents after the DMG boot ROM.
+ */
+static void test_boot_vram(void)
+{
+    static const uint8_t logo[PPU_LOGO_SIZE] = {
+        0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
+        0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+        0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+        0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+        0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
+        0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E
+    };
+    static const uint8_t tile_1[16] = {
+        0xF0, 0x00, 0xF0, 0x00, 0xFC, 0x00, 0xFC, 0x00,
+        0xFC, 0x00, 0xFC, 0x00, 0xF3, 0x00, 0xF3, 0x00
+    };
+    static const uint8_t registered[16] = {
+        0x3C, 0x00, 0x42, 0x00, 0xB9, 0x00, 0xA5, 0x00,
+        0xB9, 0x00, 0xA5, 0x00, 0x42, 0x00, 0x3C, 0x00
+    };
+
+    begin();
+    ppu_load_boot_vram(&ppu, logo);
+
+    assert(memcmp(&ppu.vram[0x0010], tile_1, 16) == 0);
+    assert(memcmp(&ppu.vram[0x0190], registered, 16) == 0);
+
+    /* Tile 0 and everything past the (R) is empty. */
+    for (unsigned i = 0; i < 16; i++) {
+        assert(ppu.vram[i] == 0);
+        assert(ppu.vram[0x01A0 + i] == 0);
+    }
+
+    for (unsigned i = 0; i < 12; i++) {
+        assert(ppu.vram[MAP_LOW + 0x104 + i] == 1 + i);
+        assert(ppu.vram[MAP_LOW + 0x124 + i] == 13 + i);
+    }
+
+    assert(ppu.vram[MAP_LOW + 0x110] == 0x19);
+    assert(ppu.vram[MAP_LOW] == 0);
+}
+
 int main(void)
 {
     test_background_tile();
@@ -624,6 +760,10 @@ int main(void)
     test_sprite_8x16();
     test_sprites_per_line_limit();
     test_lcd_off_blanks_the_screen();
+    test_palette_written_during_a_line();
+    test_sprite_stall_delays_its_pixels();
+    test_lcdc_written_during_a_line();
+    test_boot_vram();
 
     printf("PPU rendering tests passed!\n");
 
