@@ -26,6 +26,17 @@ static void setup(void)
     ppu_init(&ppu, &interrupts);
 }
 
+/*
+ * A reset PPU has LY = LYC = 0, which keeps the STAT line high and makes
+ * every STAT write request the interrupt (the write glitch). Tests that are
+ * not about that move LYC out of the way.
+ */
+static void setup_quiet(void)
+{
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 0xFF);
+}
+
 /* Steps in 4-dot M-cycles, like the machine does. */
 static void run(unsigned dots)
 {
@@ -171,7 +182,7 @@ static void test_lyc_flag_and_interrupt(void)
 static void test_stat_mode_interrupts(void)
 {
     /* HBlank: at the end of drawing on every visible line. */
-    setup();
+    setup_quiet();
     ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
     run(248);
     assert(!irq(INTERRUPT_LCD_STAT));
@@ -181,17 +192,20 @@ static void test_stat_mode_interrupts(void)
     run(LINE);
     assert(irq(INTERRUPT_LCD_STAT));
 
-    /* OAM scan: at the start of every visible line. */
-    setup();
+    /*
+     * OAM scan: a pulse in the last M-cycle of the line before, so the
+     * interrupt is requested at dot 452, before the line starts.
+     */
+    setup_quiet();
     ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
     clear_irqs();
-    run(LINE - 4);
+    run(LINE - 8);
     assert(!irq(INTERRUPT_LCD_STAT));
     run(4);
     assert(irq(INTERRUPT_LCD_STAT));
 
     /* VBlank: only when line 144 starts. */
-    setup();
+    setup_quiet();
     ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_VBLANK_INTERRUPT);
     run(144 * LINE - 4);
     assert(!irq(INTERRUPT_LCD_STAT));
@@ -206,7 +220,7 @@ static void test_stat_mode_interrupts(void)
  */
 static void test_stat_interrupt_blocking(void)
 {
-    setup();
+    setup_quiet();
     ppu_write(&ppu, PPU_STAT_ADDRESS,
               PPU_STAT_HBLANK_INTERRUPT | PPU_STAT_OAM_INTERRUPT);
 
@@ -507,7 +521,10 @@ static void test_lyc_flag_gap_at_line_change(void)
     assert((read(PPU_STAT_ADDRESS) & PPU_STAT_LYC_FLAG) != 0);
 }
 
-/* With the OAM interrupt enabled, one is also requested when line 144 starts. */
+/*
+ * With the OAM interrupt enabled, line 144 is announced like any visible line
+ * (a pulse at dot 452 of line 143), and VBlank follows when it starts.
+ */
 static void test_mode2_interrupt_at_vblank_start(void)
 {
     setup();
@@ -520,16 +537,195 @@ static void test_mode2_interrupt_at_vblank_start(void)
     assert(!irq(INTERRUPT_LCD_STAT));
     assert(!irq(INTERRUPT_VBLANK));
 
-    /* Both arrive together, when the line starts. */
-    run(12);
+    run(8);
+    assert(irq(INTERRUPT_LCD_STAT));
+    assert(!irq(INTERRUPT_VBLANK));
+
+    run(4);
     assert(read(PPU_LY_ADDRESS) == 144);
     assert(irq(INTERRUPT_VBLANK));
-    assert(irq(INTERRUPT_LCD_STAT));
 
     /* Line 145 has no mode 2, so nothing more. */
     clear_irqs();
     run(LINE);
     assert(!irq(INTERRUPT_LCD_STAT));
+}
+
+/*
+ * The mode 2 condition is a pulse, not a level: enabling the interrupt while
+ * a line is being scanned does nothing, and only the first M-cycle of line 0
+ * announces it, because that line has no line before it to do so.
+ */
+static void test_mode2_pulse(void)
+{
+    setup_quiet();
+    clear_irqs();
+    run(40);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
+    assert(mode() == PPU_MODE_OAM_SCAN);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    /* Line 153 does not announce line 0: that one comes with the line. */
+    setup_quiet();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
+    run(153 * LINE);
+    clear_irqs();
+    run(LINE - 4);
+    assert(read(PPU_LY_ADDRESS) == 0);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    /* Line 0 raises it with the line itself, for one M-cycle. */
+    run(4);
+    assert(ppu.ly == 0 && ppu.line_dot == 0);
+    assert(irq(INTERRUPT_LCD_STAT));
+
+    /* Enabling it in that M-cycle fires it; a cycle later it does not. */
+    setup();
+    run(153 * LINE + LINE);
+    clear_irqs();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
+    assert(irq(INTERRUPT_LCD_STAT));
+
+    setup();
+    run(153 * LINE + LINE + 4);
+    clear_irqs();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
+    assert(!irq(INTERRUPT_LCD_STAT));
+}
+
+/*
+ * The DMG's STAT write glitch: for the cycle of the write every enable bit
+ * reads as set, so writing STAT requests the interrupt whenever the PPU is in
+ * HBlank or VBlank, in the pulse that announces a line, or LY = LYC, if the
+ * line was low before. Not while scanning or drawing.
+ */
+static void test_stat_write_glitch(void)
+{
+    /* HBlank. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    run(260);
+    assert(mode() == PPU_MODE_HBLANK);
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(irq(INTERRUPT_LCD_STAT));
+
+    /* Drawing and the scan: nothing. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    run(40);
+    assert(mode() == PPU_MODE_OAM_SCAN);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(!irq(INTERRUPT_LCD_STAT));
+    run(60);
+    assert(mode() == PPU_MODE_DRAWING);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    /* The first M-cycle of a line is in none of the modes. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    run(LINE - 4);
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(irq(INTERRUPT_LCD_STAT));
+    run(4);
+    assert(ppu.line_dot == 0);
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    /* VBlank. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    run(144 * LINE + 100);
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(irq(INTERRUPT_LCD_STAT));
+
+    /* LY = LYC, even while drawing. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 0);
+    run(100);
+    assert(mode() == PPU_MODE_DRAWING);
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(irq(INTERRUPT_LCD_STAT));
+
+    /* A line that is already high does not rise again. */
+    setup();
+    ppu_write(&ppu, PPU_LYC_ADDRESS, 100);
+    run(260);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+    assert(irq(INTERRUPT_LCD_STAT));
+    clear_irqs();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    /* The glitch leaves the written value in place. */
+    assert((read(PPU_STAT_ADDRESS) & PPU_STAT_WRITE_MASK) ==
+           PPU_STAT_HBLANK_INTERRUPT);
+}
+
+/*
+ * The first line after the LCD is switched on reads as mode 0 but has had no
+ * HBlank, so neither enabling the HBlank interrupt nor the STAT write glitch
+ * requests anything there. The HBlank at the end of drawing does.
+ */
+static void test_first_line_after_lcd_on_has_no_hblank(void)
+{
+    setup_quiet();
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, 0x00);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, 0x91);
+    assert(mode() == PPU_MODE_HBLANK);
+    clear_irqs();
+
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    run(40);
+    ppu_write(&ppu, PPU_STAT_ADDRESS, 0x00);
+    assert(!irq(INTERRUPT_LCD_STAT));
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+    assert(!irq(INTERRUPT_LCD_STAT));
+
+    run(216);
+    assert(mode() == PPU_MODE_HBLANK);
+    assert(irq(INTERRUPT_LCD_STAT));
+}
+
+/*
+ * A CPU waiting in HALT notices a request made late in an M-cycle one cycle
+ * after a running CPU does, so the PPU marks the sources that fall late: the
+ * mode 2 pulse does, the others do not.
+ */
+static void test_late_requests(void)
+{
+    setup();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_OAM_INTERRUPT);
+    clear_irqs();
+    run(LINE - 8);
+    interrupts.late = 0;
+    run(4);
+    assert(irq(INTERRUPT_LCD_STAT));
+    assert((interrupts.late & INTERRUPT_LCD_STAT) != 0);
+
+    setup();
+    ppu_write(&ppu, PPU_STAT_ADDRESS, PPU_STAT_HBLANK_INTERRUPT);
+    run(248);
+    interrupts.late = 0;
+    run(4);
+    assert(irq(INTERRUPT_LCD_STAT));
+    assert((interrupts.late & INTERRUPT_LCD_STAT) == 0);
+
+    setup();
+    run(144 * LINE - 4);
+    interrupts.late = 0;
+    run(4);
+    assert(irq(INTERRUPT_VBLANK));
+    assert((interrupts.late & INTERRUPT_VBLANK) == 0);
 }
 
 static void put_oam_sprite(unsigned index, uint8_t x)
@@ -670,6 +866,10 @@ int main(void)
     test_lyc_flag_across_lcd_off();
     test_lyc_flag_gap_at_line_change();
     test_mode2_interrupt_at_vblank_start();
+    test_mode2_pulse();
+    test_stat_write_glitch();
+    test_first_line_after_lcd_on_has_no_hblank();
+    test_late_requests();
     test_mode3_length();
     test_register_access();
 

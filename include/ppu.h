@@ -92,6 +92,8 @@ typedef struct Ppu {
     uint16_t drawing_end_dot;   /* dot of the line where mode 3 ends */
     bool ly_advanced;           /* LY already shows the next line (from dot 452) */
     bool pre_draw;              /* first line after LCD on, before drawing starts */
+    bool oam_pulse;             /* the mode 2 interrupt condition, high only
+                                   in the last 4 dots of the line before */
     uint64_t frames;        /* completed frames since reset */
 
     InterruptRegisters *interrupts;

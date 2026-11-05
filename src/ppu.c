@@ -29,6 +29,16 @@ static bool ppu_next_line_is_visible(const Ppu *ppu)
            ppu->ly == PPU_LINES_PER_FRAME - 1;
 }
 
+/*
+ * Whether the line after this one is announced by a mode 2 pulse in the last
+ * M-cycle of this one: every visible line is, and so is line 144, where
+ * VBlank begins. Line 0 is not: its pulse comes with the line itself.
+ */
+static bool ppu_next_line_has_oam_interrupt(const Ppu *ppu)
+{
+    return ppu->ly + 1 <= FIRST_VBLANK_LINE;
+}
+
 /* LY as the CPU sees it: it moves on 4 dots before the line ends. */
 static uint8_t ppu_visible_ly(const Ppu *ppu)
 {
@@ -114,21 +124,30 @@ static void ppu_update_stat_line(Ppu *ppu)
         return;
     }
 
-    bool line = (ppu->lyc_flag &&
-                 (ppu->stat & PPU_STAT_LYC_INTERRUPT) != 0) ||
-                (ppu->mode == PPU_MODE_HBLANK &&
-                 (ppu->stat & PPU_STAT_HBLANK_INTERRUPT) != 0) ||
-                (ppu->mode == PPU_MODE_VBLANK &&
-                 (ppu->stat & PPU_STAT_VBLANK_INTERRUPT) != 0) ||
-                (ppu->mode == PPU_MODE_OAM_SCAN &&
-                 (ppu->stat & PPU_STAT_OAM_INTERRUPT) != 0) ||
-                /* The mode 2 condition is also true when line 144 starts. */
-                (ppu->mode == PPU_MODE_VBLANK &&
-                 ppu->ly == FIRST_VBLANK_LINE &&
-                 (ppu->stat & PPU_STAT_OAM_INTERRUPT) != 0);
+    bool level = (ppu->lyc_flag &&
+                  (ppu->stat & PPU_STAT_LYC_INTERRUPT) != 0) ||
+                 /* The first line after the LCD is switched on reads as
+                  * mode 0 but has not had an HBlank. */
+                 (ppu->mode == PPU_MODE_HBLANK && !ppu->pre_draw &&
+                  (ppu->stat & PPU_STAT_HBLANK_INTERRUPT) != 0) ||
+                 (ppu->mode == PPU_MODE_VBLANK &&
+                  (ppu->stat & PPU_STAT_VBLANK_INTERRUPT) != 0);
+
+    /*
+     * The mode 2 condition is a pulse, not a level held through the scan: it
+     * is high only for the 4 dots before the line it announces starts, so
+     * enabling it during the scan does nothing. Line 144 gets one too.
+     */
+    bool pulse = ppu->oam_pulse && (ppu->stat & PPU_STAT_OAM_INTERRUPT) != 0;
+    bool line = level || pulse;
 
     if (line && !ppu->stat_line) {
-        interrupts_request(ppu->interrupts, INTERRUPT_LCD_STAT);
+        /* The pulse edge falls late in its M-cycle; the others do not. */
+        if (level) {
+            interrupts_request(ppu->interrupts, INTERRUPT_LCD_STAT);
+        } else {
+            interrupts_request_late(ppu->interrupts, INTERRUPT_LCD_STAT);
+        }
     }
 
     ppu->stat_line = line;
@@ -142,6 +161,7 @@ static void ppu_start_frame(Ppu *ppu)
     ppu->mode = PPU_MODE_OAM_SCAN;
     ppu->pre_draw = false;
     ppu->ly_advanced = false;
+    ppu->oam_pulse = false;
 }
 
 void ppu_init(Ppu *ppu, InterruptRegisters *interrupts)
@@ -279,6 +299,16 @@ void ppu_write(Ppu *ppu, uint16_t address, uint8_t value)
             break;
 
         case PPU_STAT_ADDRESS:
+            /*
+             * The DMG's STAT write glitch: while the write happens every
+             * enable bit reads as set, so the line is high in any mode but
+             * drawing, or whenever LY = LYC, and the interrupt is requested
+             * if that raises a line that was low. The new enables then
+             * apply as usual.
+             */
+            ppu->stat = PPU_STAT_WRITE_MASK;
+            ppu_update_stat_line(ppu);
+
             ppu->stat = (uint8_t)(value & PPU_STAT_WRITE_MASK);
             ppu_update_stat_line(ppu);
             break;
@@ -338,6 +368,7 @@ static void ppu_finish_line(Ppu *ppu)
 {
     ppu->ly++;
     ppu->ly_advanced = false;
+    ppu->oam_pulse = false;
 
     if (ppu->ly == FIRST_VBLANK_LINE) {
         ppu->mode = PPU_MODE_VBLANK;
@@ -345,6 +376,7 @@ static void ppu_finish_line(Ppu *ppu)
         interrupts_request(ppu->interrupts, INTERRUPT_VBLANK);
     } else if (ppu->ly == PPU_LINES_PER_FRAME) {
         ppu_start_frame(ppu);
+        ppu->oam_pulse = true;
     } else if (ppu->ly < FIRST_VBLANK_LINE) {
         ppu->mode = PPU_MODE_OAM_SCAN;
     }
@@ -380,6 +412,12 @@ void ppu_step(Ppu *ppu, CpuCycles cycles)
             ppu->pre_draw = false;
             ppu_start_drawing(ppu);
         } else if (ppu->mode == PPU_MODE_OAM_SCAN) {
+            /* Line 0's pulse lasts its first M-cycle. */
+            if (ppu->oam_pulse && ppu->line_dot >= CYCLES_PER_MCYCLE) {
+                ppu->oam_pulse = false;
+                ppu_update_stat_line(ppu);
+            }
+
             if (ppu->line_dot < OAM_SCAN_END_DOT) {
                 return;
             }
@@ -400,6 +438,7 @@ void ppu_step(Ppu *ppu, CpuCycles cycles)
                 /* LY has moved on but the comparison has not caught up: the
                  * flag reads 0 until the new line starts. */
                 ppu->lyc_flag = false;
+                ppu->oam_pulse = ppu_next_line_has_oam_interrupt(ppu);
                 ppu_update_stat_line(ppu);
             }
 
