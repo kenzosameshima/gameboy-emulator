@@ -12,6 +12,9 @@
 # Downloaded Mooneye test suite.
 /roms/mooneye/
 
+# Downloaded test ROM collection (gbmicrotest, ...).
+/roms/testroms/
+
 # Battery saves written next to ROMs.
 *.sav
 *.sav.tmp

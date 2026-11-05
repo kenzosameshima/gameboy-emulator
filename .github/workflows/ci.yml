@@ -63,3 +63,14 @@ jobs:
 
       - name: Run the Mooneye ROMs
         run: make -j"$(nproc)" mooneye
+
+  # The gbmicrotest ROMs, checked on a real DMG. Known failures are listed in
+  # tools/microtest-expected-failures.txt; a new failure fails the job.
+  microtest:
+    name: gbmicrotest ROMs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the gbmicrotest ROMs
+        run: make -j"$(nproc)" microtest

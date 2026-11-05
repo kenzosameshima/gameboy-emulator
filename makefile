@@ -108,7 +108,7 @@ ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb \
 	    roms/dmg_sound/*.gb
 
 
-.PHONY: all clean test rom-test check sdl mooneye
+.PHONY: all clean test rom-test check sdl mooneye microtest
 
 # Keep object files between runs so unchanged tests are not rebuilt.
 .SECONDARY:
@@ -193,6 +193,12 @@ check: test rom-test
 # network and not every ROM passes yet.
 mooneye: $(ROM_TEST)
 	tools/mooneye.sh $(ROM_TEST)
+
+
+# The gbmicrotest ROMs, checked on a real DMG. Downloads the test ROM
+# collection into roms/testroms on first use; see tools/testroms.sh.
+microtest: $(ROM_TEST)
+	tools/testroms.sh microtest $(ROM_TEST)
 
 
 -include $(ALL_OBJ:.o=.d)

@@ -12,9 +12,13 @@
  * A000 (0x80 while running, 0 for a pass) and the text from A004. That needs
  * a battery-backed cartridge, since it is read back through the save.
  *
+ * With --microtest the ROM is a gbmicrotest ROM, which leaves its verdict in
+ * high RAM instead: 0x01 at FF82 for a pass, 0xFF for a failure. Those tests
+ * were checked on a real DMG, and most finish within a frame or two.
+ *
  * The run stops as soon as a verdict is seen.
  *
- * Usage: rom_test <rom> [max T-cycles]
+ * Usage: rom_test <rom> [max T-cycles] [--microtest]
  * Exit code: 0 if the ROM passed, 1 otherwise.
  */
 
@@ -33,9 +37,19 @@
 
 #include <emulator.h>
 
+#include "../src/emulator_internal.h"
+
 enum {
     DEFAULT_MAX_CYCLES = 400000000,
     OUTPUT_CAPACITY = 4096,
+
+    /* gbmicrotest: the verdict byte, how often it is read, and the default
+     * budget (is_if_set_during_ime0 needs about 380 ms of emulated time). */
+    MICROTEST_RESULT_ADDRESS = 0xFF82,
+    MICROTEST_PASS = 0x01,
+    MICROTEST_FAIL = 0xFF,
+    MICROTEST_CHECK_CYCLES = 4096,
+    MICROTEST_MAX_CYCLES = 2000000,
 
     /* How often cartridge RAM is checked for a verdict. */
     RAM_CHECK_CYCLES = 1000000,
@@ -153,14 +167,28 @@ static void check_cartridge_ram(Emulator *emulator, Capture *capture)
     }
 }
 
+/* Reads the verdict a gbmicrotest ROM leaves in high RAM. */
+static void check_microtest(Emulator *emulator, Capture *capture)
+{
+    uint8_t result = memory_read(&emulator->memory, MICROTEST_RESULT_ADDRESS);
+
+    if (result == MICROTEST_PASS) {
+        capture->passed = 1;
+    } else if (result == MICROTEST_FAIL) {
+        capture->failed = 1;
+    }
+}
+
 /* Runs until a verdict arrives or `max_cycles` are used up. */
 static EmulatorStatus run_until_verdict(
     Emulator *emulator,
     Capture *capture,
-    uint64_t max_cycles
+    uint64_t max_cycles,
+    int microtest
 )
 {
-    int check_ram = emulator_has_battery(emulator);
+    int check_ram = !microtest && emulator_has_battery(emulator);
+    uint64_t check_cycles = microtest ? MICROTEST_CHECK_CYCLES : RAM_CHECK_CYCLES;
     uint64_t start = emulator_cycles(emulator);
     EmulatorStatus status = EMULATOR_OK;
 
@@ -173,13 +201,15 @@ static EmulatorStatus run_until_verdict(
 
         uint64_t slice = max_cycles - done;
 
-        if (slice > RAM_CHECK_CYCLES) {
-            slice = RAM_CHECK_CYCLES;
+        if (slice > check_cycles) {
+            slice = check_cycles;
         }
 
         status = emulator_run_cycles(emulator, slice);
 
-        if (check_ram && status == EMULATOR_OK) {
+        if (microtest) {
+            check_microtest(emulator, capture);
+        } else if (check_ram && status == EMULATOR_OK) {
             check_cartridge_ram(emulator, capture);
         }
     }
@@ -189,21 +219,42 @@ static EmulatorStatus run_until_verdict(
 
 int main(int argc, char **argv)
 {
-    if (argc < 2 || argc > 3) {
-        fprintf(stderr, "Usage: %s <rom> [max T-cycles]\n", argv[0]);
+    int microtest = 0;
+    const char *rom = NULL;
+    const char *cycles_text = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--microtest") == 0) {
+            microtest = 1;
+        } else if (rom == NULL) {
+            rom = argv[i];
+        } else if (cycles_text == NULL) {
+            cycles_text = argv[i];
+        } else {
+            rom = NULL;
+            break;
+        }
+    }
+
+    if (rom == NULL) {
+        fprintf(
+            stderr,
+            "Usage: %s <rom> [max T-cycles] [--microtest]\n",
+            argv[0]
+        );
         return 1;
     }
 
-    uint64_t max_cycles = DEFAULT_MAX_CYCLES;
+    uint64_t max_cycles = microtest ? MICROTEST_MAX_CYCLES : DEFAULT_MAX_CYCLES;
 
-    if (argc == 3) {
+    if (cycles_text != NULL) {
         char *end = NULL;
 
         errno = 0;
-        max_cycles = strtoull(argv[2], &end, 10);
+        max_cycles = strtoull(cycles_text, &end, 10);
 
-        if (errno != 0 || end == argv[2] || *end != '\0') {
-            fprintf(stderr, "Invalid cycle count: %s\n", argv[2]);
+        if (errno != 0 || end == cycles_text || *end != '\0') {
+            fprintf(stderr, "Invalid cycle count: %s\n", cycles_text);
             return 1;
         }
     }
@@ -221,10 +272,10 @@ int main(int argc, char **argv)
     capture->emulator = emulator;
     emulator_set_serial_output(emulator, capture_byte, capture);
 
-    EmulatorStatus status = emulator_load_rom(emulator, argv[1]);
+    EmulatorStatus status = emulator_load_rom(emulator, rom);
 
     if (status == EMULATOR_OK) {
-        status = run_until_verdict(emulator, capture, max_cycles);
+        status = run_until_verdict(emulator, capture, max_cycles, microtest);
     }
 
     const char *verdict;
@@ -239,7 +290,7 @@ int main(int argc, char **argv)
         verdict = "ERROR";
     }
 
-    printf("[%s] %s (%llu cycles)", verdict, argv[1],
+    printf("[%s] %s (%llu cycles)", verdict, rom,
            (unsigned long long)emulator_cycles(emulator));
 
     if (!capture->passed && status != EMULATOR_OK) {
