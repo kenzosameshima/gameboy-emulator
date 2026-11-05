@@ -71,6 +71,9 @@ void cpu_tick(CPU *cpu, CpuCycles cycles)
 {
     cpu->step_cycles = (CpuCycles)(cpu->step_cycles + cycles);
 
+    /* Only requests made in this M-cycle can be late for it. */
+    cpu->interrupts->late = 0;
+
     if (cpu->tick != NULL) {
         cpu->tick(cpu->tick_context, cycles);
     }
@@ -147,13 +150,20 @@ CpuCycles cpu_step(CPU *cpu)
 
     uint8_t pending = interrupts_pending(cpu->interrupts);
 
-    if (cpu->ime && pending != 0) {
+    /*
+     * A CPU waiting in HALT samples earlier in the M-cycle than one between
+     * instructions, so it does not yet see a request made late in the cycle
+     * that just ended: it notices it one cycle later.
+     */
+    uint8_t awake = (uint8_t)(pending & ~cpu->interrupts->late);
+
+    if (cpu->ime && (cpu->halted ? awake : pending) != 0) {
         cpu_service_interrupt(cpu);
         return cpu->step_cycles;
     }
 
     if (cpu->halted) {
-        if (pending == 0) {
+        if (awake == 0) {
             cpu->step_status = CPU_STEP_HALTED;
             cpu_idle(cpu);
             return cpu->step_cycles;

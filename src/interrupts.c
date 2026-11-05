@@ -6,11 +6,18 @@ void interrupts_init(InterruptRegisters *interrupts)
 {
     interrupts->interrupt_flag = 0;
     interrupts->interrupt_enable = 0;
+    interrupts->late = 0;
 }
 
 void interrupts_request(InterruptRegisters *interrupts, uint8_t mask)
 {
     interrupts->interrupt_flag |= (uint8_t)(mask & INTERRUPT_VALID_MASK);
+}
+
+void interrupts_request_late(InterruptRegisters *interrupts, uint8_t mask)
+{
+    interrupts_request(interrupts, mask);
+    interrupts->late |= (uint8_t)(mask & INTERRUPT_VALID_MASK);
 }
 
 void interrupts_acknowledge(InterruptRegisters *interrupts, uint8_t mask)

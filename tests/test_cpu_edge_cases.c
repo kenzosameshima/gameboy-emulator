@@ -215,6 +215,71 @@ static void test_ei_halt_returns_to_halt(TestMachine *m)
     assert(m->cpu.halted);
 }
 
+static void test_late_request_wakes_halt_a_cycle_later(TestMachine *m)
+{
+    static const uint8_t program[] = { 0x76, 0x00, 0x00 }; /* HALT NOP NOP */
+
+    /*
+     * An interrupt requested late in the M-cycle that just ended is seen at
+     * once by a CPU between instructions, but a halted one samples earlier
+     * in the cycle and notices it one cycle later, with IME on or off.
+     */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    m->cpu.ime = true;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.halted);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.step_status == CPU_STEP_HALTED);
+    assert(m->cpu.halted);
+
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(m->cpu.registers.pc == 0x0058);
+
+    /* An early request is seen in the first cycle. */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    m->cpu.ime = true;
+    cpu_step(&m->cpu);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+
+    /* With IME off the wake-up is a cycle later too. */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    cpu_step(&m->cpu);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.halted);
+    assert(cpu_step(&m->cpu) == 4);
+    assert(!m->cpu.halted);
+    assert(m->cpu.step_status == CPU_STEP_EXECUTED);
+
+    /* A running CPU is not held back by a late request. */
+    static const uint8_t nops[] = { 0x00, 0x00 };
+
+    load(m, nops, sizeof(nops));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+    m->cpu.ime = true;
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+}
+
 /* Starts a dispatch with the stack where its pushes will hit IE (FFFF). */
 static void start_dispatch(TestMachine *m, uint16_t pc, uint16_t sp,
                            uint8_t enable, uint8_t flags)
@@ -308,6 +373,7 @@ int main(void)
     test_halt_wakes_without_extra_cycle(&machine);
     test_halt_bug(&machine);
     test_ei_halt_returns_to_halt(&machine);
+    test_late_request_wakes_halt_a_cycle_later(&machine);
     test_dispatch_with_ie_push(&machine);
     test_if_and_ie_bits(&machine);
 

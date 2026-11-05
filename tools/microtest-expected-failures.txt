@@ -105,8 +105,6 @@ gbmicrotest/int_hblank_nops_scx6.gb
 gbmicrotest/int_hblank_nops_scx7.gb
 gbmicrotest/int_oam_incs.gb
 gbmicrotest/int_oam_nops.gb
-gbmicrotest/int_timer_halt.gb
-gbmicrotest/int_timer_halt_div_b.gb
 gbmicrotest/lcdon_to_if_oam_b.gb
 gbmicrotest/lcdon_to_oam_int_l0.gb
 gbmicrotest/lcdon_to_oam_int_l1.gb

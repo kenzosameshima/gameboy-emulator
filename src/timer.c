@@ -94,7 +94,7 @@ static void timer_advance_reload(Timer *timer)
 
     if (timer->reload_delay == 0) {
         timer->tima = timer->tma;
-        interrupts_request(timer->interrupts, INTERRUPT_TIMER);
+        interrupts_request_late(timer->interrupts, INTERRUPT_TIMER);
         timer->reload_pending = false;
         timer->reload_hold = TIMER_RELOAD_DELAY_CYCLES;
     }

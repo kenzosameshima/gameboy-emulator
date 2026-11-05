@@ -20,6 +20,14 @@ enum {
 typedef struct InterruptRegisters {
     uint8_t interrupt_flag;
     uint8_t interrupt_enable;
+
+    /*
+     * Sources requested in the second half of the M-cycle that just ended.
+     * A running CPU sees them at once, but one waiting in HALT samples
+     * earlier in the cycle and notices them a cycle later. The CPU clears
+     * the set as each M-cycle begins.
+     */
+    uint8_t late;
 } InterruptRegisters;
 
 /* Initial state: IF = 0, IE = 0. IME lives in the CPU. */
@@ -27,6 +35,9 @@ void interrupts_init(InterruptRegisters *interrupts);
 
 /* Hardware components raise interrupts through this call. */
 void interrupts_request(InterruptRegisters *interrupts, uint8_t mask);
+
+/* Like interrupts_request() for a source whose edge falls late in the cycle. */
+void interrupts_request_late(InterruptRegisters *interrupts, uint8_t mask);
 
 /* Clears the request bits in `mask`, as servicing an interrupt does. */
 void interrupts_acknowledge(InterruptRegisters *interrupts, uint8_t mask);
