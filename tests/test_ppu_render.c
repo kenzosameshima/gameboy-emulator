@@ -905,6 +905,77 @@ static void test_window_map_select_written_during_a_line(void)
 }
 
 /*
+ * A sprite at OAM X = 24 (screen column 16) costs 6 + 5 dots, so pixel 16 comes
+ * out at dot 92 + 16 + 11 = 119, its fetch begins at dot 113, and the sprite
+ * size (LCDC bit 2) is read at dot 116. An LCDC write takes hold 2 dots into
+ * its M-cycle: one from the cycle at dot 112 is in time, one from dot 116 is
+ * not. A Y-flipped sprite shows tile 2 when it is 8 pixels tall and tile 3 when
+ * it is 16.
+ */
+static void sprite_size_setup(void)
+{
+    begin();
+    put_solid_tile(2, 1);
+    put_solid_tile(3, 2);
+    put_sprite(0, 16, 24, 2, 0x40);             /* top at line 0, Y flip */
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | OBJ_ON | TILES_UNSIGNED));
+}
+
+static void test_sprite_size_written_during_a_line(void)
+{
+    sprite_size_setup();
+
+    run_to(1, 112);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | OBJ_ON | OBJ_TALL | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(16, 1) == 2);                  /* 8x16: tile 3 */
+
+    sprite_size_setup();
+
+    run_to(1, 116);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | OBJ_ON | OBJ_TALL | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(16, 1) == 1);                  /* still 8x8: tile 2 */
+}
+
+/*
+ * A sprite is fetched only if the OBJ layer is on 6 dots after the pixel that
+ * reaches it (dot 108 + 6 for the sprite above), so turning OBJ on in time
+ * shows it and turning it on too late does not.
+ */
+static void test_obj_enabled_during_a_line_before_a_sprite_is_fetched(void)
+{
+    begin();
+    put_solid_tile(2, 1);
+    put_sprite(0, 16, 24, 2, 0);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 108);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | OBJ_ON | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(16, 1) == 1);
+
+    begin();
+    put_solid_tile(2, 1);
+    put_sprite(0, 16, 24, 2, 0);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 116);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | OBJ_ON | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(16, 1) == 0);
+}
+
+/*
  * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
  * with only the low bit plane set and each row twice, the (R) symbol in tile
  * 25, and the tile map rows that show them. The bytes are the well known
@@ -977,6 +1048,8 @@ int main(void)
     test_wx_below_seven_matches_before_the_first_pixel();
     test_window_pixels_start_6_dots_late();
     test_window_map_select_written_during_a_line();
+    test_sprite_size_written_during_a_line();
+    test_obj_enabled_during_a_line_before_a_sprite_is_fetched();
     test_boot_vram();
 
     printf("PPU rendering tests passed!\n");
