@@ -146,8 +146,9 @@ typedef struct Ppu {
  * OBJ enable bits are those in force at the pixel's dot, from a log of the
  * writes made during the line, and so are WX and the window enable bit that
  * start the window, which delays its pixels by 6 dots; its tiles are read at
- * their own dots like the background's. The sprites are those at the start of
- * drawing. Drawing lasts
+ * their own dots like the background's. The line's sprites are picked at the
+ * start of drawing; each is fetched only if OBJ is on when its turn comes, and
+ * its size is read at the fetch. Drawing lasts
  * 172 dots plus SCX mod 8 plus a penalty for the window and sprites on the
  * line (see ppu_render.c), which moves when HBlank starts. VRAM is unreadable
  * while drawing and OAM while scanning or drawing, as on hardware: reads give

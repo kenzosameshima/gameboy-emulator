@@ -6,9 +6,8 @@
 # stalls and the background tile fetches (scroll, map and tile data selection)
 # follow the pixel they apply to. The scroll, map and tile data tests are
 # close but not exact (a tile column is off), as are the WX tests (a few lines
-# are one pixel off); the rest change something the renderer still reads once
-# at the start of drawing: sprite size. The window map and tile data tests are
-# one tile column off.
+# are one pixel off), as are the window map and tile data, sprite size and
+# sprite enable tests. Turning the window on and off mid-line is not modelled.
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_en_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_map_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_obj_en_change.gb

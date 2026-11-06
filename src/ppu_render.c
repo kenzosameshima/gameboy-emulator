@@ -66,7 +66,7 @@ typedef struct LineSprite {
     int x;           /* leftmost screen column, may be negative */
     uint8_t tile;
     uint8_t flags;
-    unsigned row;    /* row of the sprite on this line, after any flip */
+    unsigned row;    /* row of the sprite on this line, before any flip */
 } LineSprite;
 
 /*
@@ -98,16 +98,6 @@ static unsigned select_sprites(
             .flags = entry[3],
             .row = (unsigned)row
         };
-
-        if ((sprite.flags & SPRITE_Y_FLIP) != 0) {
-            sprite.row = height - 1 - sprite.row;
-        }
-
-        if (height == 16) {
-            /* A tall sprite is two consecutive tiles; bit 0 is ignored. */
-            sprite.tile = (uint8_t)((sprite.tile & 0xFE) |
-                                    (sprite.row >= 8 ? 1 : 0));
-        }
 
         /* Insertion sort keeps equal X in OAM order. */
         unsigned position = count;
@@ -212,6 +202,17 @@ enum {
      * bytes are read this many dots before the tile's first pixel. Fitted to
      * the mealybug m3_window_timing and m3_lcdc_*_win_change pictures.
      */
+    /*
+     * A sprite is fetched 6 dots before its first pixel (the 6 dots of its
+     * stall). The OBJ layer must be on 6 dots after the pixel that reaches the
+     * sprite for the fetch to happen, and the sprite size (LCDC bit 2) is read
+     * 3 dots after the fetch begins. Fitted to the mealybug
+     * m3_lcdc_obj_en_change* and m3_lcdc_obj_size_change* pictures.
+     */
+    SPRITE_FETCH_LEAD = 6,
+    OBJ_ENABLE_DELAY = 6,
+    SPRITE_SIZE_DELAY = 3,
+
     WINDOW_START_DOTS = 6,
     WINDOW_NUMBER_LEAD = 6,
     WINDOW_LOW_LEAD = 6,
@@ -315,6 +316,7 @@ static bool render_background(
     const LineSprite sprites[SPRITES_PER_LINE],
     const unsigned stalls[SPRITES_PER_LINE],
     unsigned sprite_count,
+    bool fetched[SPRITES_PER_LINE],
     uint8_t colors[PPU_SCREEN_WIDTH],
     unsigned dots[PPU_SCREEN_WIDTH]
 )
@@ -371,7 +373,18 @@ static bool render_background(
 
         while (next_sprite < sprite_count &&
                sprites[next_sprite].x <= (int)x) {
-            stall += stalls[next_sprite++];
+            /* A sprite is fetched, and stalls the line, only if the OBJ
+             * layer is on when its turn comes. */
+            fetched[next_sprite] =
+                (ppu_register_at(ppu, PPU_LOGGED_LCDC,
+                                 dot + OBJ_ENABLE_DELAY) &
+                 PPU_LCDC_OBJ_ENABLE) != 0;
+
+            if (fetched[next_sprite]) {
+                stall += stalls[next_sprite];
+            }
+
+            next_sprite++;
         }
 
         if (stall > 0) {
@@ -444,6 +457,7 @@ static bool render_background(
 static void render_sprites(
     Ppu *ppu,
     const LineSprite sprites[SPRITES_PER_LINE],
+    const bool fetched[SPRITES_PER_LINE],
     unsigned count,
     const unsigned dots[PPU_SCREEN_WIDTH],
     const uint8_t background_colors[PPU_SCREEN_WIDTH],
@@ -454,8 +468,36 @@ static void render_sprites(
 
     for (unsigned i = 0; i < count; i++) {
         const LineSprite *sprite = &sprites[i];
-        const uint8_t *tile = &ppu->vram[(size_t)sprite->tile * TILE_BYTES];
 
+        if (!fetched[i]) {
+            continue;
+        }
+
+        /*
+         * The sprite's tile and row are worked out when it is fetched, with
+         * the sprite size (LCDC bit 2) as it is then.
+         */
+        unsigned fetch_dot = dots[sprite->x < 0 ? 0 : (unsigned)sprite->x] -
+                             SPRITE_FETCH_LEAD;
+        unsigned height =
+            (ppu_register_at(ppu, PPU_LOGGED_LCDC,
+                             fetch_dot + SPRITE_SIZE_DELAY) &
+             PPU_LCDC_OBJ_TALL) != 0 ? 16 : 8;
+        unsigned row = sprite->row;
+        uint8_t tile_number = sprite->tile;
+
+        if ((sprite->flags & SPRITE_Y_FLIP) != 0) {
+            row = (height - 1 - row) & (height - 1);
+        }
+
+        row &= height - 1;
+
+        if (height == 16) {
+            /* A tall sprite is two consecutive tiles; bit 0 is ignored. */
+            tile_number = (uint8_t)((tile_number & 0xFE) | (row >= 8 ? 1 : 0));
+        }
+
+        const uint8_t *tile = &ppu->vram[(size_t)tile_number * TILE_BYTES];
 
         PpuLoggedRegister palette_register =
             (sprite->flags & SPRITE_PALETTE_1) != 0
@@ -479,7 +521,7 @@ static void render_sprites(
 
             unsigned tile_column =
                 (sprite->flags & SPRITE_X_FLIP) != 0 ? 7 - column : column;
-            uint8_t color = tile_pixel(tile, sprite->row % 8, tile_column);
+            uint8_t color = tile_pixel(tile, row % 8, tile_column);
 
             if (color == 0) {
                 continue;
@@ -509,29 +551,27 @@ void ppu_render_scanline(Ppu *ppu)
     }
 
     /*
-     * The sprites are those at the start of drawing; the background and window
-     * tiles are read as the fetcher gets to them, and the BG and OBJ enable
-     * bits, the palettes and what starts the window (WX, the window enable
-     * bit) are those at each pixel's own dot.
+     * The line's sprites are picked at the start of drawing; the background
+     * and window tiles are read as the fetcher gets to them, and the BG and
+     * OBJ enable bits, the palettes and what starts the window (WX, the
+     * window enable bit) are those at each pixel's own dot.
      */
     uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];
     uint8_t *line = &ppu->framebuffer[ppu->ly * PPU_SCREEN_WIDTH];
 
-    /* Sprites are fetched, and stall the pixels, only if OBJ was on at the
-     * start of drawing. */
+    /* The line's sprites are picked at the start of drawing; each is fetched,
+     * and stalls the pixels, only if the OBJ layer is on when its turn comes. */
     LineSprite sprites[SPRITES_PER_LINE] = {{0}};
     unsigned stalls[SPRITES_PER_LINE] = {0};
-    unsigned count = 0;
+    bool fetched[SPRITES_PER_LINE] = {false};
+    unsigned count = select_sprites(ppu, lcdc, sprites);
     unsigned dots[PPU_SCREEN_WIDTH];
 
-    if ((lcdc & PPU_LCDC_OBJ_ENABLE) != 0) {
-        count = select_sprites(ppu, lcdc, sprites);
-        sprite_stalls(ppu, sprites, count, stalls);
-    }
+    sprite_stalls(ppu, sprites, count, stalls);
 
     bool window_drawn = render_background(
-        ppu, lcdc, sprites, stalls, count, background_colors, dots
+        ppu, lcdc, sprites, stalls, count, fetched, background_colors, dots
     );
 
     for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
@@ -546,7 +586,7 @@ void ppu_render_scanline(Ppu *ppu)
             : 0;
     }
 
-    render_sprites(ppu, sprites, count, dots, background_colors, line);
+    render_sprites(ppu, sprites, fetched, count, dots, background_colors, line);
 
     if (window_drawn) {
         ppu->window_line++;
