@@ -90,60 +90,6 @@ static bool window_visible(const Ppu *ppu, uint8_t lcdc)
            ppu->wx <= WINDOW_MAX_WX;
 }
 
-/*
- * Fills `colors` with the background and window color number of each
- * pixel on the line, and returns whether the window was drawn.
- */
-static bool render_background(
-    const Ppu *ppu,
-    uint8_t lcdc,
-    uint8_t colors[PPU_SCREEN_WIDTH]
-)
-{
-    if ((lcdc & PPU_LCDC_BG_ENABLE) == 0) {
-        /* With the background off, it and the window are blank. */
-        for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
-            colors[x] = 0;
-        }
-
-        return false;
-    }
-
-    size_t background_map =
-        (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
-            ? TILEMAP_HIGH_OFFSET
-            : TILEMAP_LOW_OFFSET;
-    size_t window_map =
-        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
-            ? TILEMAP_HIGH_OFFSET
-            : TILEMAP_LOW_OFFSET;
-    bool window = window_visible(ppu, lcdc);
-    int window_start = (int)ppu->wx - WINDOW_X_OFFSET;
-    unsigned background_y = (unsigned)(ppu->ly + ppu->scy) & 0xFF;
-
-    for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
-        if (window && (int)x >= window_start) {
-            colors[x] = tilemap_pixel(
-                ppu,
-                lcdc,
-                window_map,
-                (unsigned)((int)x - window_start),
-                ppu->window_line
-            );
-        } else {
-            colors[x] = tilemap_pixel(
-                ppu,
-                lcdc,
-                background_map,
-                (x + ppu->scx) & 0xFF,
-                background_y
-            );
-        }
-    }
-
-    return window;
-}
-
 typedef struct LineSprite {
     uint8_t index;   /* position in OAM, which breaks ties */
     int x;           /* leftmost screen column, may be negative */
@@ -259,27 +205,158 @@ static unsigned sprite_stalls(
 }
 
 /*
- * The dot of the line that each pixel comes out at: pixel 0 at 92 plus SCX
- * mod 8, one per dot, and every sprite fetched at or before it adds its stall.
+ * The background fetcher and pixel FIFO.
+ *
+ * Drawing starts at dot 80. The fetcher reads a background tile in three
+ * steps of 2 dots (tile number, low byte, high byte) and can push the 8
+ * pixels into the FIFO 2 dots after that, when the FIFO is empty. The first
+ * fetch of the line is thrown away and repeated, so tile 0 is pushed at dot
+ * 92; every later tile is fetched while the previous one is shifted out, and
+ * pushed in the dot after the last of its 8 pixels. The first SCX mod 8
+ * pixels of tile 0 are shifted out without being drawn. A sprite fetch
+ * freezes the fetcher and the shifter for its stall.
+ *
+ * What a fetch reads (map select, scroll, tile data select) is, for now,
+ * still taken from the start of drawing.
  */
-static void pixel_dots(
+enum {
+    FETCH_DOTS = 6,
+    FIFO_PIXELS = 8
+};
+
+typedef struct Fetcher {
+    unsigned tile;                       /* next tile column to fetch */
+    unsigned start;                      /* dot the fetch in progress began */
+    uint8_t data[FIFO_PIXELS];           /* its pixels */
+} Fetcher;
+
+/* Reads the pixels of background tile `fetcher->tile` for this line. */
+static void fetch_background_tile(
     const Ppu *ppu,
+    uint8_t lcdc,
+    Fetcher *fetcher,
+    unsigned dot
+)
+{
+    size_t map =
+        (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
+            ? TILEMAP_HIGH_OFFSET
+            : TILEMAP_LOW_OFFSET;
+    unsigned y = (unsigned)(ppu->ly + ppu->scy) & 0xFF;
+    unsigned column = ((ppu->scx >> 3) + fetcher->tile) & (TILEMAP_COLUMNS - 1);
+    uint8_t number = ppu->vram[map + (y / 8) * TILEMAP_COLUMNS + column];
+    const uint8_t *tile = background_tile(ppu, lcdc, number);
+
+    for (unsigned i = 0; i < FIFO_PIXELS; i++) {
+        fetcher->data[i] = tile_pixel(tile, y % 8, i);
+    }
+
+    fetcher->start = dot;
+    fetcher->tile++;
+}
+
+/*
+ * Runs the fetcher and the FIFO over the line. Fills `colors` with the
+ * background (or window) color number of each pixel and `dots` with the dot
+ * each one comes out at. Returns whether the window was drawn.
+ */
+static bool render_background(
+    const Ppu *ppu,
+    uint8_t lcdc,
     const LineSprite sprites[SPRITES_PER_LINE],
     const unsigned stalls[SPRITES_PER_LINE],
-    unsigned count,
+    unsigned sprite_count,
+    uint8_t colors[PPU_SCREEN_WIDTH],
     unsigned dots[PPU_SCREEN_WIDTH]
 )
 {
-    unsigned delay = 0;
-    unsigned next = 0;
+    uint8_t fifo[FIFO_PIXELS] = {0};
+    unsigned head = 0;
+    unsigned size = 0;
+    Fetcher fetcher = {0};
+    unsigned discard = ppu->scx & 7;
+    unsigned next_sprite = 0;
+    unsigned stall = 0;
+    unsigned x = 0;
+    unsigned dot = DRAW_START_DOT + FETCH_DOTS;
 
-    for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
-        while (next < count && sprites[next].x <= (int)x) {
-            delay += stalls[next++];
+    fetch_background_tile(ppu, lcdc, &fetcher, dot);
+
+    for (;; dot++) {
+        if (stall > 0) {
+            stall--;
+            continue;
         }
 
-        dots[x] = FIRST_PIXEL_DOT + (ppu->scx & 7) + x + delay;
+        if (size == 0 && dot >= fetcher.start + FETCH_DOTS) {
+            for (unsigned i = 0; i < FIFO_PIXELS; i++) {
+                fifo[i] = fetcher.data[i];
+            }
+
+            head = 0;
+            size = FIFO_PIXELS;
+            fetch_background_tile(ppu, lcdc, &fetcher, dot);
+        }
+
+        if (size == 0) {
+            continue;   /* the first tile is not ready yet */
+        }
+
+        if (discard > 0) {
+            head++;
+            size--;
+            discard--;
+            continue;
+        }
+
+        while (next_sprite < sprite_count &&
+               sprites[next_sprite].x <= (int)x) {
+            stall += stalls[next_sprite++];
+        }
+
+        if (stall > 0) {
+            stall--;
+            continue;
+        }
+
+        dots[x] = dot;
+        colors[x] = fifo[head++];
+        size--;
+
+        if (++x == PPU_SCREEN_WIDTH) {
+            break;
+        }
     }
+
+    if ((lcdc & PPU_LCDC_BG_ENABLE) == 0) {
+        /* With the background off, it and the window are blank. */
+        for (x = 0; x < PPU_SCREEN_WIDTH; x++) {
+            colors[x] = 0;
+        }
+
+        return false;
+    }
+
+    bool window = window_visible(ppu, lcdc);
+    int window_start = (int)ppu->wx - WINDOW_X_OFFSET;
+    size_t window_map =
+        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
+            ? TILEMAP_HIGH_OFFSET
+            : TILEMAP_LOW_OFFSET;
+
+    for (x = 0; window && x < PPU_SCREEN_WIDTH; x++) {
+        if ((int)x >= window_start) {
+            colors[x] = tilemap_pixel(
+                ppu,
+                lcdc,
+                window_map,
+                (unsigned)((int)x - window_start),
+                ppu->window_line
+            );
+        }
+    }
+
+    return window;
 }
 
 static void render_sprites(
@@ -357,12 +434,11 @@ void ppu_render_scanline(Ppu *ppu)
     uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];
     uint8_t *line = &ppu->framebuffer[ppu->ly * PPU_SCREEN_WIDTH];
-    bool window_drawn = render_background(ppu, lcdc, background_colors);
 
     /* Sprites are fetched, and stall the pixels, only if OBJ was on at the
      * start of drawing. */
-    LineSprite sprites[SPRITES_PER_LINE];
-    unsigned stalls[SPRITES_PER_LINE];
+    LineSprite sprites[SPRITES_PER_LINE] = {{0}};
+    unsigned stalls[SPRITES_PER_LINE] = {0};
     unsigned count = 0;
     unsigned dots[PPU_SCREEN_WIDTH];
 
@@ -371,7 +447,9 @@ void ppu_render_scanline(Ppu *ppu)
         sprite_stalls(ppu, sprites, count, stalls);
     }
 
-    pixel_dots(ppu, sprites, stalls, count, dots);
+    bool window_drawn = render_background(
+        ppu, lcdc, sprites, stalls, count, background_colors, dots
+    );
 
     for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
         unsigned dot = dots[x];
