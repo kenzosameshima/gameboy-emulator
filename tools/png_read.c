@@ -501,7 +501,7 @@ static unsigned sample(const uint8_t *row, unsigned i, unsigned depth)
     unsigned per_byte = 8 / depth;
     unsigned shift = 8 - depth * (1 + i % per_byte);
 
-    return (row[i / per_byte] >> shift) & ((1u << depth) - 1);
+    return ((unsigned)row[i / per_byte] >> shift) & ((1u << depth) - 1);
 }
 
 static uint8_t *read_file(const char *path, size_t *size)
