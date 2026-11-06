@@ -225,6 +225,14 @@ enum {
     OBJ_ENABLE_DELAY = 6,
     SPRITE_SIZE_DELAY = 3,
 
+    /*
+     * Whether the window is enabled is read 1 dot after the pixel the match
+     * is made at, and for each later window tile 7 dots before its first
+     * pixel. Fitted to the mealybug m3_lcdc_win_en_change_multiple* pictures.
+     */
+    WINDOW_TRIGGER_DELAY = 1,
+    WINDOW_ENABLE_LEAD = 7,
+
     WINDOW_START_DOTS = 6,
     WINDOW_NUMBER_LEAD = 6,
     WINDOW_LOW_LEAD = 6,
@@ -294,11 +302,11 @@ static void fetch_window_row(
     const Ppu *ppu,
     unsigned tile,
     unsigned dot,
+    unsigned row,
     uint8_t *low,
     uint8_t *high
 )
 {
-    unsigned row = ppu->window_line;
     uint8_t number_lcdc = ppu_register_at(
         ppu, PPU_LOGGED_LCDC, dot - WINDOW_NUMBER_LEAD + STEP_READ_DOT);
     size_t map =
@@ -319,9 +327,9 @@ static void fetch_window_row(
 /*
  * Runs the fetcher and the FIFO over the line. Fills `colors` with the
  * background (or window) color number of each pixel and `dots` with the dot
- * each one comes out at. Returns whether the window was drawn.
+ * each one comes out at. Returns how many times the window started.
  */
-static bool render_background(
+static unsigned render_background(
     const Ppu *ppu,
     uint8_t lcdc,
     const LineSprite sprites[SPRITES_PER_LINE],
@@ -344,7 +352,7 @@ static bool render_background(
     unsigned x = 0;
     bool bg_on = (lcdc & PPU_LCDC_BG_ENABLE) != 0;
     bool window_started = false;
-    bool window_drawn = false;
+    unsigned window_starts = 0;
     int window_start = 0;
     unsigned window_tile = (unsigned)-1;
     uint8_t window_low = 0;
@@ -404,13 +412,37 @@ static bool render_background(
             continue;
         }
 
+        /*
+         * The window enable is looked at when each window tile is fetched, not
+         * for each pixel: a tile already being fetched is shown whole. When
+         * it is clear at the next one the window ends and the background
+         * starts over with a fresh tile whose first pixel is this one. Only a
+         * new match of WX with the pixel counter starts the window again.
+         */
+        if (window_started && x > 0) {
+            unsigned window_column = (unsigned)((int)x - window_start);
+
+            if (window_column % 8 == 0 &&
+                (ppu_register_at(
+                     ppu, PPU_LOGGED_LCDC,
+                     dot - WINDOW_ENABLE_LEAD) &
+                 PPU_LCDC_WINDOW_ENABLE) == 0) {
+                unsigned scx = ppu_register_at(ppu, PPU_LOGGED_SCX,
+                                               dot - SCX_COLUMN_LEAD);
+
+                window_started = false;
+                fetcher.tile = (x + scx) / 8 - scx / 8;
+                fetcher.age = 0;
+                size = 0;
+                continue;
+            }
+        }
+
         dots[x] = dot;
         colors[x] = fifo[head++];
         size--;
 
         if (bg_on && ppu->ly >= ppu->wy) {
-            uint8_t at_lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, dot);
-
             /*
              * The window starts when WX equals the pixel counter plus 7, the
              * counter being 0 at the first pixel. WX below 7 matches in the
@@ -423,30 +455,45 @@ static bool render_background(
                 unsigned wx =
                     ppu_register_at(ppu, PPU_LOGGED_WX, at - WX_COMPARE_LAG);
 
-                if ((ppu_register_at(ppu, PPU_LOGGED_LCDC, at) &
+                if ((ppu_register_at(ppu, PPU_LOGGED_LCDC,
+                                     at + WINDOW_TRIGGER_DELAY) &
                      PPU_LCDC_WINDOW_ENABLE) != 0 &&
                     wx == x + WINDOW_X_OFFSET - back) {
                     window_started = true;
+                    window_starts++;
+                    window_tile = (unsigned)-1;
                     window_start = (int)wx - WINDOW_X_OFFSET;
                     dots[x] = dot + WINDOW_START_DOTS;
                     stall = WINDOW_START_DOTS;
                 }
             }
 
-            if (window_started && (at_lcdc & PPU_LCDC_WINDOW_ENABLE) != 0) {
+            if (window_started) {
                 unsigned column = (unsigned)((int)x - window_start);
 
+                /*
+                 * The window enable is looked at when each window tile is
+                 * fetched, not for each pixel: a tile already being fetched is
+                 * shown whole. Clearing it ends the window at the next tile,
+                 * and only a new match of WX with the pixel counter starts it
+                 * again.
+                 */
                 if (column / 8 != window_tile) {
                     window_tile = column / 8;
-                    fetch_window_row(ppu, window_tile, dots[x], &window_low,
+                    fetch_window_row(ppu, window_tile, dots[x],
+                                     ppu->window_line + window_starts - 1,
+                                     &window_low,
                                      &window_high);
                 }
+            }
+
+            if (window_started) {
+                unsigned column = (unsigned)((int)x - window_start);
 
                 unsigned bit = 7 - column % 8;
 
                 colors[x] = (uint8_t)((((window_high >> bit) & 1) << 1) |
                                       ((window_low >> bit) & 1));
-                window_drawn = true;
             }
         }
 
@@ -461,10 +508,10 @@ static bool render_background(
             colors[x] = 0;
         }
 
-        return false;
+        return 0;
     }
 
-    return window_drawn;
+    return window_starts;
 }
 
 static void render_sprites(
@@ -583,7 +630,7 @@ void ppu_render_scanline(Ppu *ppu)
 
     sprite_stalls(ppu, sprites, count, stalls);
 
-    bool window_drawn = render_background(
+    unsigned window_starts = render_background(
         ppu, lcdc, sprites, stalls, count, fetched, background_colors, dots
     );
 
@@ -601,8 +648,8 @@ void ppu_render_scanline(Ppu *ppu)
 
     render_sprites(ppu, sprites, fetched, count, dots, background_colors, line);
 
-    if (window_drawn) {
-        ppu->window_line++;
+    if (window_starts > 0) {
+        ppu->window_line = (uint8_t)(ppu->window_line + window_starts);
     }
 }
 

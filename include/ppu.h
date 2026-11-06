@@ -111,7 +111,7 @@ typedef struct Ppu {
 
     PpuMode mode;
     uint16_t line_dot;      /* dots into the current line, 0-455 */
-    uint8_t window_line;    /* next window row to draw */
+    uint8_t window_line;    /* next window row to draw; counts window starts */
     bool stat_line;         /* the ORed STAT interrupt condition */
     bool lyc_flag;          /* latched LY == LYC; frozen while the LCD is off */
     uint16_t drawing_end_dot;   /* dot of the line where mode 3 ends */

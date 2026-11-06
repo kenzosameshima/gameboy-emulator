@@ -974,6 +974,94 @@ static void test_obj_enabled_during_a_line_before_a_sprite_is_fetched(void)
     assert(pixel(16, 1) == 0);
 }
 
+static uint8_t tile_three(unsigned column)
+{
+    (void)column;
+
+    return 3;
+}
+
+/*
+ * Whether the window is enabled is looked at once per window tile, 7 dots
+ * before the tile's first pixel, not for each pixel. With WX 10 the window
+ * starts at pixel 3 and its pixels come out at dot 98 + x, so tile k's first
+ * pixel is at dot 101 + 8k and its check at dot 94 + 8k: tile 2 at 110 and
+ * tile 3 at 118. An LCDC write in the M-cycle starting at dot 112 takes
+ * hold at 114, between the two: tiles 0 to 2 (pixels 3 to 26) are window and
+ * the background starts over at pixel 27 with a fresh tile whose first pixel
+ * is that one. Setting the enable again does not bring the window back.
+ */
+static void test_window_ends_at_a_tile_boundary(void)
+{
+    begin();
+    put_tile(1, TILE_A);
+    put_solid_tile(2, 2);
+    put_solid_tile(3, 3);
+    fill_row(MAP_LOW, 0, cycling_tile);         /* column 3 is tile 1 */
+    fill_row(MAP_HIGH, 0, tile_three);          /* the window is color 3 */
+    ppu_write(&ppu, PPU_WY_ADDRESS, 0);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 10);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+
+    run_to(4, 112);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_MAP_HIGH));
+    run_to(4, 124);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+    finish_frame();
+
+    assert(pixel(3, 4) == 3);
+    assert(pixel(26, 4) == 3);
+
+    /* Tile 1 row 4 is 1 0 1 0 1 0 1 0, starting at pixel 27 (an ordinary
+     * background tile would be at pixel 24, and give 0 here). */
+    assert(pixel(27, 4) == 1);
+    assert(pixel(28, 4) == 0);
+    assert(pixel(29, 4) == 1);
+
+    /* The next column is tile 2, and the window did not return. */
+    assert(pixel(35, 4) == 2);
+    assert(pixel(36, 4) == 2);
+}
+
+/*
+ * The window's own line counter counts window starts, not lines: a line where
+ * the window starts twice moves it on by 2.
+ */
+static void test_window_line_counts_window_starts(void)
+{
+    begin();
+    put_solid_tile(2, 2);
+    put_solid_tile(3, 3);
+    fill_row(MAP_LOW, 0, tile_two);
+    fill_row(MAP_HIGH, 0, tile_three);
+    ppu_write(&ppu, PPU_WY_ADDRESS, 0);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 10);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+
+    run_to(1, 0);
+    assert(ppu.window_line == 1);               /* line 0 drew the window */
+
+    run_to(1, 112);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,           /* window off: ends at pixel 27 */
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_MAP_HIGH));
+    run_to(1, 116);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 60);        /* matches pixel 53 */
+    run_to(1, 120);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+
+    run_to(2, 0);
+    assert(ppu.window_line == 3);               /* two starts on line 1 */
+}
+
 /*
  * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
  * with only the low bit plane set and each row twice, the (R) symbol in tile
@@ -1047,6 +1135,8 @@ int main(void)
     test_wx_below_seven_matches_before_the_first_pixel();
     test_window_pixels_start_6_dots_late();
     test_window_map_select_written_during_a_line();
+    test_window_ends_at_a_tile_boundary();
+    test_window_line_counts_window_starts();
     test_sprite_size_written_during_a_line();
     test_obj_enabled_during_a_line_before_a_sprite_is_fetched();
     test_boot_vram();

@@ -2,12 +2,12 @@
 # per line relative to the release. tools/testroms.sh mealybug exits 1 only for
 # a failure that is not listed here, and reports listed ROMs that now pass.
 #
-# 7 of 24 DMG tests pass. Palettes, the BG and OBJ enable bits, the sprite
+# 8 of 24 DMG tests pass. Palettes, the BG and OBJ enable bits, the sprite
 # stalls and the background tile fetches (scroll, map and tile data selection)
 # follow the pixel they apply to. The scroll, map and tile data tests are
 # close but not exact (a tile column is off), as are the WX tests (a few lines
 # are one pixel off), as are the window map and tile data, sprite size and
-# sprite enable tests. Turning the window on and off mid-line is not modelled.
+# sprite enable tests. Window enable changes mid-line are modelled.
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_en_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_bg_map_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_obj_en_change.gb
@@ -16,7 +16,6 @@ mealybug-tearoom-tests/ppu/m3_lcdc_obj_size_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_obj_size_change_scx.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_change.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_win_change.gb
-mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple_wx.gb
 mealybug-tearoom-tests/ppu/m3_lcdc_win_map_change.gb
 mealybug-tearoom-tests/ppu/m3_scx_high_5_bits.gb
