@@ -699,6 +699,172 @@ static void test_lcdc_written_during_a_line(void)
 }
 
 /*
+ * The background fetcher reads each tile with the registers as they are then.
+ * Tile k's number is read at dot 84 + 8k (tile 0 at 86), its low byte 2 dots
+ * later and its high byte 2 after that. The tests write a register in the
+ * M-cycle starting at dot 96, which is after tile 1's fetch has begun and
+ * before tile 2's: tile 1 must still look the old way and tile 2 the new one.
+ * SCX and SCY take hold 0 and 1 dots into the M-cycle, LCDC 2; the map select
+ * is read 1 dot after the tile number's dot and the tile data select 1 dot
+ * after each byte's.
+ */
+static void fill_row(size_t map, unsigned row, uint8_t tile_of_column(unsigned))
+{
+    for (unsigned column = 0; column < 32; column++) {
+        ppu.vram[map + row * 32 + column] = tile_of_column(column);
+    }
+}
+
+static uint8_t cycling_tile(unsigned column)
+{
+    return (uint8_t)(column % 3 + 1);   /* tiles 1, 2, 3, 1, 2, 3 ... */
+}
+
+static uint8_t tile_one(unsigned column)
+{
+    (void)column;
+
+    return 1;
+}
+
+static uint8_t tile_two(unsigned column)
+{
+    (void)column;
+
+    return 2;
+}
+
+static void test_scx_written_during_a_line(void)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_solid_tile(2, 2);
+    put_solid_tile(3, 3);
+    fill_row(MAP_LOW, 0, cycling_tile);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 96);
+    ppu_write(&ppu, PPU_SCX_ADDRESS, 8);        /* one tile column to the right */
+    finish_frame();
+
+    assert(pixel(0, 1) == 1);                   /* column 0 */
+    assert(pixel(8, 1) == 2);                   /* column 1 */
+    assert(pixel(16, 1) == 1);                  /* column 3, not 2 */
+    assert(pixel(24, 1) == 2);                  /* column 4 */
+}
+
+static void test_scy_written_during_a_line(void)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_solid_tile(2, 2);
+    fill_row(MAP_LOW, 0, tile_one);
+    fill_row(MAP_LOW, 1, tile_two);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 96);
+    ppu_write(&ppu, PPU_SCY_ADDRESS, 8);        /* one tile row down */
+    finish_frame();
+
+    assert(pixel(8, 1) == 1);
+    assert(pixel(16, 1) == 2);
+}
+
+static void test_map_select_written_during_a_line(void)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_solid_tile(2, 2);
+    fill_row(MAP_LOW, 0, tile_one);
+    fill_row(MAP_HIGH, 0, tile_two);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 96);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | BG_MAP_HIGH));
+    finish_frame();
+
+    assert(pixel(8, 1) == 1);
+    assert(pixel(16, 1) == 2);
+}
+
+static void test_tile_data_select_written_during_a_line(void)
+{
+    uint8_t signed_tile[16];
+
+    begin();
+    put_solid_tile(1, 1);                       /* 8010, the unsigned tile 1 */
+    solid_tile(2, signed_tile);
+    put_tile_at(0x1010, signed_tile);           /* 9010, the signed tile 1 */
+    fill_row(MAP_LOW, 0, tile_one);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(1, 96);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON));
+    finish_frame();
+
+    assert(pixel(8, 1) == 1);
+    assert(pixel(16, 1) == 2);
+}
+
+/*
+ * The window starts where WX equals the pixel counter plus 7, with WX as it is
+ * when the pixel comes out, not as it is when the line ends. A WX write takes
+ * hold 3 dots into its M-cycle. For WX below 7 the match comes in the dots
+ * before the first pixel: counter -3 for WX 4, at dot 89.
+ */
+static void window_setup(uint8_t wx)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_solid_tile(2, 2);
+    fill_row(MAP_LOW, 0, tile_one);
+    fill_row(MAP_HIGH, 0, tile_two);
+    ppu_write(&ppu, PPU_WY_ADDRESS, 0);
+    ppu_write(&ppu, PPU_WX_ADDRESS, wx);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+}
+
+static void test_wx_written_before_the_window_starts(void)
+{
+    window_setup(167);                          /* off the right edge */
+
+    run_to(1, 100);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 47);        /* from dot 103, pixel 40 */
+    run_to(1, 160);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 167);       /* too late to matter */
+    finish_frame();
+
+    assert(pixel(39, 1) == 1);
+    assert(pixel(40, 1) == 2);
+    assert(pixel(159, 1) == 2);
+}
+
+static void test_wx_below_seven_matches_before_the_first_pixel(void)
+{
+    window_setup(4);                            /* 3 pixels of window cut */
+
+    run_to(1, 84);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 100);       /* from dot 87: before the match */
+    finish_frame();
+
+    assert(pixel(0, 1) == 1);                   /* no window at the start... */
+    assert(pixel(92, 1) == 1);
+    assert(pixel(93, 1) == 2);                  /* ...but at WX 100 */
+
+    window_setup(4);
+
+    run_to(1, 88);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 100);       /* from dot 91: after the match */
+    finish_frame();
+
+    assert(pixel(0, 1) == 2);                   /* WX 4 matched at dot 89 */
+    assert(pixel(159, 1) == 2);
+}
+
+/*
  * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
  * with only the low bit plane set and each row twice, the (R) symbol in tile
  * 25, and the tile map rows that show them. The bytes are the well known
@@ -763,6 +929,12 @@ int main(void)
     test_palette_written_during_a_line();
     test_sprite_stall_delays_its_pixels();
     test_lcdc_written_during_a_line();
+    test_scx_written_during_a_line();
+    test_scy_written_during_a_line();
+    test_map_select_written_during_a_line();
+    test_tile_data_select_written_during_a_line();
+    test_wx_written_before_the_window_starts();
+    test_wx_below_seven_matches_before_the_first_pixel();
     test_boot_vram();
 
     printf("PPU rendering tests passed!\n");
