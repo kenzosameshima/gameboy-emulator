@@ -700,13 +700,12 @@ static void test_lcdc_written_during_a_line(void)
 
 /*
  * The background fetcher reads each tile with the registers as they are then.
- * Tile k's number is read at dot 84 + 8k (tile 0 at 86), its low byte 2 dots
- * later and its high byte 2 after that. The tests write a register in the
- * M-cycle starting at dot 96, which is after tile 1's fetch has begun and
- * before tile 2's: tile 1 must still look the old way and tile 2 the new one.
- * SCX and SCY take hold 0 and 1 dots into the M-cycle, LCDC 2; the map select
- * is read 1 dot after the tile number's dot and the tile data select 1 dot
- * after each byte's.
+ * Tile k's fetch begins at dot 84 + 8k (tile 0 at 86); its number is read at the
+ * step's second dot, its low byte 2 dots after that and its high byte 2 after
+ * that. A register write takes hold 2 dots into its M-cycle. The tests write in
+ * the M-cycle starting at dot 96 (SCX at 92, which reaches the tile column 3
+ * dots before the step): after tile 1's fetch has begun and before tile 2's,
+ * so tile 1 must still look the old way and tile 2 the new one.
  */
 static void fill_row(size_t map, unsigned row, uint8_t tile_of_column(unsigned))
 {
@@ -743,7 +742,7 @@ static void test_scx_written_during_a_line(void)
     fill_row(MAP_LOW, 0, cycling_tile);
     ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
 
-    run_to(1, 96);
+    run_to(1, 92);
     ppu_write(&ppu, PPU_SCX_ADDRESS, 8);        /* one tile column to the right */
     finish_frame();
 

@@ -189,12 +189,24 @@ enum {
     FETCH_HIGH_AGE = 4,
 
     /*
-     * LCDC bit 3 (map select) is read this many dots after the tile number's
-     * step, and bit 4 (tile data select) after each byte's. Fitted to the
-     * mealybug m3_lcdc_bg_map_change and m3_lcdc_tile_sel_change pictures.
+     * A fetch step takes 2 dots and reads in the second: LCDC (the map select
+     * for the number, the tile data select for the bytes) and SCY are read
+     * 1 dot into their step. Registers take hold 2 dots into the write's
+     * M-cycle, so a write in the M-cycle starting at dot D is seen by the steps
+     * that begin at D + 1 or later. SCX (for the tile column, and for the
+     * pixels thrown away at the start of the line) is read one dot later than
+     * that. SCX, WX and the discarded pixels are read at fitted dots instead:
+     * the tile column from SCX 3 dots before its step (as if the fetcher's
+     * column were settled when the previous tile was pushed), the number of
+     * pixels to throw away from SCX 3 dots after the start of drawing, and WX
+     * is compared one dot earlier than the pixel's own dot. Each sits in the
+     * middle of the range of values that fit the mealybug m3_scx_* and
+     * m3_wx_*_change pictures equally well.
      */
-    MAP_SELECT_DELAY = 1,
-    TILE_SELECT_DELAY = 1,
+    STEP_READ_DOT = 1,
+    SCX_COLUMN_LEAD = 3,
+    SCX_DISCARD_READ_DOT = 3,
+    WX_COMPARE_LAG = 1,
 
     /*
      * Starting the window restarts the fetcher: its first pixel and all the
@@ -246,18 +258,17 @@ static size_t background_row_address(
 /* Does the step of the fetch in progress that falls on this dot. */
 static void fetch_step(const Ppu *ppu, Fetcher *fetcher, unsigned dot)
 {
-    unsigned select_delay =
-        fetcher->age == FETCH_NUMBER_AGE ? MAP_SELECT_DELAY : TILE_SELECT_DELAY;
-    uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, dot + select_delay);
+    uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, dot + STEP_READ_DOT);
     unsigned y = (unsigned)(ppu->ly +
-                            ppu_register_at(ppu, PPU_LOGGED_SCY, dot)) & 0xFF;
+                            ppu_register_at(ppu, PPU_LOGGED_SCY,
+                                            dot + STEP_READ_DOT)) & 0xFF;
 
     if (fetcher->age == FETCH_NUMBER_AGE) {
         size_t map =
             (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
                 ? TILEMAP_HIGH_OFFSET
                 : TILEMAP_LOW_OFFSET;
-        unsigned scx = ppu_register_at(ppu, PPU_LOGGED_SCX, dot);
+        unsigned scx = ppu_register_at(ppu, PPU_LOGGED_SCX, dot - SCX_COLUMN_LEAD);
         unsigned column = ((scx >> 3) + fetcher->tile) & (TILEMAP_COLUMNS - 1);
 
         fetcher->number = ppu->vram[map + (y / 8) * TILEMAP_COLUMNS + column];
@@ -289,7 +300,7 @@ static void fetch_window_row(
 {
     unsigned row = ppu->window_line;
     uint8_t number_lcdc = ppu_register_at(
-        ppu, PPU_LOGGED_LCDC, dot - WINDOW_NUMBER_LEAD + MAP_SELECT_DELAY);
+        ppu, PPU_LOGGED_LCDC, dot - WINDOW_NUMBER_LEAD + STEP_READ_DOT);
     size_t map =
         (number_lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
             ? TILEMAP_HIGH_OFFSET
@@ -298,10 +309,10 @@ static void fetch_window_row(
         ppu->vram[map + (row / 8) * TILEMAP_COLUMNS + (tile & (TILEMAP_COLUMNS - 1))];
 
     *low = ppu->vram[background_row_address(
-        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_LOW_LEAD + TILE_SELECT_DELAY),
+        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_LOW_LEAD + STEP_READ_DOT),
         number, row % 8, 0)];
     *high = ppu->vram[background_row_address(
-        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_HIGH_LEAD + TILE_SELECT_DELAY),
+        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_HIGH_LEAD + STEP_READ_DOT),
         number, row % 8, 1)];
 }
 
@@ -326,7 +337,8 @@ static bool render_background(
     unsigned size = 0;
     Fetcher fetcher = {0};
     unsigned discard =
-        ppu_register_at(ppu, PPU_LOGGED_SCX, DRAW_START_DOT) & 7;
+        ppu_register_at(ppu, PPU_LOGGED_SCX,
+                        DRAW_START_DOT + SCX_DISCARD_READ_DOT) & 7;
     unsigned next_sprite = 0;
     unsigned stall = 0;
     unsigned x = 0;
@@ -408,7 +420,8 @@ static bool render_background(
 
             for (unsigned back = first + 1; back-- > 0 && !window_started;) {
                 unsigned at = dot - back;
-                unsigned wx = ppu_register_at(ppu, PPU_LOGGED_WX, at);
+                unsigned wx =
+                    ppu_register_at(ppu, PPU_LOGGED_WX, at - WX_COMPARE_LAG);
 
                 if ((ppu_register_at(ppu, PPU_LOGGED_LCDC, at) &
                      PPU_LCDC_WINDOW_ENABLE) != 0 &&
