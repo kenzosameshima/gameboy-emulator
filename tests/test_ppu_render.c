@@ -1063,6 +1063,80 @@ static void test_window_line_counts_window_starts(void)
 }
 
 /*
+ * The first pixel of the line comes out at dot 92 but reads the BG enable bit
+ * 1 dot later, at 93. A write whose M-cycle starts at dot 91 (the test steps 3
+ * dots off the M-cycle grid to get there) takes hold at 93: pixel 0 already
+ * sees the background off. One starting at dot 93 takes hold at 95: pixels 0
+ * to 2 (dots 92 to 94) still see it on.
+ */
+static void test_first_pixel_reads_bg_enable_a_dot_late(void)
+{
+    begin();
+    put_solid_tile(0, 3);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(4, 88);
+    ppu_step(&ppu, 3);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(0, 4) == 0);
+    assert(pixel(1, 4) == 0);
+
+    begin();
+    put_solid_tile(0, 3);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED));
+
+    run_to(4, 92);
+    ppu_step(&ppu, 1);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS, (uint8_t)(LCD_ON | TILES_UNSIGNED));
+    finish_frame();
+
+    assert(pixel(0, 4) == 3);
+    assert(pixel(2, 4) == 3);
+    assert(pixel(3, 4) == 0);
+}
+
+static uint8_t tile_two_or_three(unsigned column)
+{
+    return (uint8_t)(column % 2 + 2);           /* tiles 2, 3, 2, 3 ... */
+}
+
+/*
+ * A window that is already running starts over when WX matches the pixel
+ * counter at a boundary between its tiles: that pixel is blank and the rest
+ * of the window comes 1 pixel later. WX 4 starts the window before the first
+ * pixel with 3 pixels cut, so its tiles begin at pixels -3, 5, 13. Changing WX
+ * to 12 (which matches pixel 5) in the M-cycle starting at dot 96 comes after
+ * the first match (dot 89) and before the second (dot 102).
+ */
+static void test_wx_match_at_a_window_tile_boundary(void)
+{
+    begin();
+    put_solid_tile(1, 1);
+    put_solid_tile(2, 2);
+    put_solid_tile(3, 3);
+    fill_row(MAP_LOW, 0, tile_one);             /* background color 1 */
+    fill_row(MAP_HIGH, 0, tile_two_or_three);   /* window colors 2, 3, 2 ... */
+    ppu_write(&ppu, PPU_WY_ADDRESS, 0);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 4);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON |
+                        WINDOW_MAP_HIGH));
+
+    run_to(4, 96);
+    ppu_write(&ppu, PPU_WX_ADDRESS, 12);
+    finish_frame();
+
+    assert(pixel(0, 4) == 2);                   /* tile 0, 5 pixels shown */
+    assert(pixel(4, 4) == 2);
+    assert(pixel(5, 4) == 0);                   /* the blank pixel */
+    assert(pixel(6, 4) == 3);                   /* tile 1, one pixel late */
+    assert(pixel(13, 4) == 3);
+    assert(pixel(14, 4) == 2);                  /* tile 2 */
+}
+
+/*
  * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
  * with only the low bit plane set and each row twice, the (R) symbol in tile
  * 25, and the tile map rows that show them. The bytes are the well known
@@ -1137,6 +1211,8 @@ int main(void)
     test_window_map_select_written_during_a_line();
     test_window_ends_at_a_tile_boundary();
     test_window_line_counts_window_starts();
+    test_first_pixel_reads_bg_enable_a_dot_late();
+    test_wx_match_at_a_window_tile_boundary();
     test_sprite_size_written_during_a_line();
     test_obj_enabled_during_a_line_before_a_sprite_is_fetched();
     test_boot_vram();
