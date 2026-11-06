@@ -22,8 +22,12 @@ enum {
 
     /* Fitted to the mealybug m3_scx_low_3_bits and m3_scy_change pictures. */
     SCX_WRITE_DOT_OFFSET = 0,
-    SCY_WRITE_DOT_OFFSET = 1
+    SCY_WRITE_DOT_OFFSET = 1,
+
+    /* Fitted to the mealybug m3_wx_*_change pictures. */
+    WX_WRITE_DOT_OFFSET = 3
 };
+
 
 static bool ppu_lcd_on(const Ppu *ppu)
 {
@@ -210,6 +214,7 @@ static void ppu_begin_line_log(Ppu *ppu)
     ppu->line_registers[PPU_LOGGED_OBP1] = ppu->obp1;
     ppu->line_registers[PPU_LOGGED_SCX] = ppu->scx;
     ppu->line_registers[PPU_LOGGED_SCY] = ppu->scy;
+    ppu->line_registers[PPU_LOGGED_WX] = ppu->wx;
     ppu->write_count = 0;
 }
 
@@ -245,8 +250,8 @@ static void ppu_log_write(
 )
 {
     unsigned plain = reg == PPU_LOGGED_SCX ? SCX_WRITE_DOT_OFFSET :
-                     reg == PPU_LOGGED_SCY ? SCY_WRITE_DOT_OFFSET
-                                           : LCDC_WRITE_DOT_OFFSET;
+                     reg == PPU_LOGGED_SCY ? SCY_WRITE_DOT_OFFSET :
+                     reg == PPU_LOGGED_WX ? WX_WRITE_DOT_OFFSET : LCDC_WRITE_DOT_OFFSET;
 
     if (palette) {
         unsigned dot = ppu->line_dot + PALETTE_WRITE_DOT_OFFSET;
@@ -538,6 +543,7 @@ void ppu_write(Ppu *ppu, uint16_t address, uint8_t value)
             break;
 
         case PPU_WX_ADDRESS:
+            ppu_log_write(ppu, PPU_LOGGED_WX, ppu->wx, value, false);
             ppu->wx = value;
             break;
 

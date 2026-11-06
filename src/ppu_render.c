@@ -315,6 +315,14 @@ static bool render_background(
     unsigned next_sprite = 0;
     unsigned stall = 0;
     unsigned x = 0;
+    bool bg_on = (lcdc & PPU_LCDC_BG_ENABLE) != 0;
+    bool window_started = false;
+    bool window_drawn = false;
+    int window_start = 0;
+    size_t window_map =
+        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
+            ? TILEMAP_HIGH_OFFSET
+            : TILEMAP_LOW_OFFSET;
 
     for (unsigned dot = DRAW_START_DOT + FETCH_DOTS;; dot++) {
         if (stall > 0) {
@@ -363,6 +371,40 @@ static bool render_background(
         colors[x] = fifo[head++];
         size--;
 
+        if (bg_on && ppu->ly >= ppu->wy) {
+            uint8_t at_lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, dot);
+
+            /*
+             * The window starts when WX equals the pixel counter plus 7, the
+             * counter being 0 at the first pixel. WX below 7 matches in the
+             * dots before it, so the comparison runs over those too.
+             */
+            unsigned first = x == 0 ? WINDOW_X_OFFSET : 0;
+
+            for (unsigned back = first + 1; back-- > 0 && !window_started;) {
+                unsigned at = dot - back;
+                unsigned wx = ppu_register_at(ppu, PPU_LOGGED_WX, at);
+
+                if ((ppu_register_at(ppu, PPU_LOGGED_LCDC, at) &
+                     PPU_LCDC_WINDOW_ENABLE) != 0 &&
+                    wx == x + WINDOW_X_OFFSET - back) {
+                    window_started = true;
+                    window_start = (int)wx - WINDOW_X_OFFSET;
+                }
+            }
+
+            if (window_started && (at_lcdc & PPU_LCDC_WINDOW_ENABLE) != 0) {
+                colors[x] = tilemap_pixel(
+                    ppu,
+                    lcdc,
+                    window_map,
+                    (unsigned)((int)x - window_start),
+                    ppu->window_line
+                );
+                window_drawn = true;
+            }
+        }
+
         if (++x == PPU_SCREEN_WIDTH) {
             break;
         }
@@ -377,26 +419,7 @@ static bool render_background(
         return false;
     }
 
-    bool window = window_visible(ppu, lcdc);
-    int window_start = (int)ppu->wx - WINDOW_X_OFFSET;
-    size_t window_map =
-        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
-            ? TILEMAP_HIGH_OFFSET
-            : TILEMAP_LOW_OFFSET;
-
-    for (x = 0; window && x < PPU_SCREEN_WIDTH; x++) {
-        if ((int)x >= window_start) {
-            colors[x] = tilemap_pixel(
-                ppu,
-                lcdc,
-                window_map,
-                (unsigned)((int)x - window_start),
-                ppu->window_line
-            );
-        }
-    }
-
-    return window;
+    return window_drawn;
 }
 
 static void render_sprites(
@@ -467,9 +490,10 @@ void ppu_render_scanline(Ppu *ppu)
     }
 
     /*
-     * The window and sprites are those at the start of drawing; the background
-     * tiles are read as the fetcher gets to them, and the BG and OBJ enable
-     * bits and the palettes are those at each pixel's own dot.
+     * The window's map and tiles and the sprites are those at the start of
+     * drawing; the background tiles are read as the fetcher gets to them, and
+     * the BG and OBJ enable bits, the palettes and what starts the window (WX,
+     * the window enable bit) are those at each pixel's own dot.
      */
     uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];

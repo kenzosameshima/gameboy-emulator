@@ -76,6 +76,7 @@ typedef enum {
     PPU_LOGGED_OBP1,
     PPU_LOGGED_SCX,
     PPU_LOGGED_SCY,
+    PPU_LOGGED_WX,
     PPU_LOGGED_COUNT
 } PpuLoggedRegister;
 
@@ -143,8 +144,9 @@ typedef struct Ppu {
  * scroll registers and the map and tile data selects as they were then, and
  * pixel x comes out at dot 92 + SCX mod 8 + x. The palettes and the BG and
  * OBJ enable bits are those in force at the pixel's dot, from a log of the
- * writes made during the line; the window and sprites are those at the start
- * of drawing. Drawing lasts
+ * writes made during the line, and so are WX and the window enable bit that
+ * start the window; the window map and tiles and the sprites are those at the
+ * start of drawing. Drawing lasts
  * 172 dots plus SCX mod 8 plus a penalty for the window and sprites on the
  * line (see ppu_render.c), which moves when HBlank starts. VRAM is unreadable
  * while drawing and OAM while scanning or drawing, as on hardware: reads give
