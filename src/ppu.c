@@ -16,16 +16,14 @@ enum {
     /* The scan's last cycle: OAM can be written and VRAM cannot be read. */
     OAM_SCAN_LAST_CYCLE_DOT = 76,
 
-    /* A register write reaches the pixels this many dots into its M-cycle. */
+    /*
+     * A register write reaches the pixels this many dots into its M-cycle. A
+     * palette write is seen 1 dot in, and for that dot reads as the old and the
+     * new value ORed; LCDC, SCX, SCY and WX all take hold 2 dots in, and the
+     * renderer reads each at its own dot (see ppu_render.c).
+     */
     PALETTE_WRITE_DOT_OFFSET = 1,
-    LCDC_WRITE_DOT_OFFSET = 2,
-
-    /* Fitted to the mealybug m3_scx_low_3_bits and m3_scy_change pictures. */
-    SCX_WRITE_DOT_OFFSET = 0,
-    SCY_WRITE_DOT_OFFSET = 1,
-
-    /* Fitted to the mealybug m3_wx_*_change pictures. */
-    WX_WRITE_DOT_OFFSET = 3
+    REGISTER_WRITE_DOT_OFFSET = 2
 };
 
 
@@ -249,17 +247,14 @@ static void ppu_log_write(
     bool palette
 )
 {
-    unsigned plain = reg == PPU_LOGGED_SCX ? SCX_WRITE_DOT_OFFSET :
-                     reg == PPU_LOGGED_SCY ? SCY_WRITE_DOT_OFFSET :
-                     reg == PPU_LOGGED_WX ? WX_WRITE_DOT_OFFSET : LCDC_WRITE_DOT_OFFSET;
-
     if (palette) {
         unsigned dot = ppu->line_dot + PALETTE_WRITE_DOT_OFFSET;
 
         ppu_log_entry(ppu, dot, reg, (uint8_t)(old_value | value));
         ppu_log_entry(ppu, dot + 1, reg, value);
     } else {
-        ppu_log_entry(ppu, ppu->line_dot + plain, reg, value);
+        ppu_log_entry(
+            ppu, ppu->line_dot + REGISTER_WRITE_DOT_OFFSET, reg, value);
     }
 }
 
