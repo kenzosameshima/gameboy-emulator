@@ -9,7 +9,8 @@ uint8_t ppu_register_at(const Ppu *ppu, PpuLoggedRegister reg, unsigned dot);
 /*
  * Draws line `ppu->ly` into the framebuffer from the registers, VRAM and
  * OAM as they are now: background, window, then sprites (ppu_render.c).
- * Advances the window's own line counter when the window was drawn.
+ * Advances the window's own line counter once for every time the window
+ * started on the line.
  */
 void ppu_render_scanline(Ppu *ppu);
 
