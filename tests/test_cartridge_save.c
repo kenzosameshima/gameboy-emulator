@@ -432,11 +432,52 @@ static void test_failed_replace_preserves_temporary(void)
     cartridge_destroy(&cartridge);
 }
 
+#ifdef _WIN32
+static DWORD WINAPI close_later(LPVOID file)
+{
+    Sleep(100);
+    CloseHandle(file);
+    return 0;
+}
+
+/* A virus scanner or a sync client holds the old save for a moment: the
+ * save waits for it instead of failing. */
+static void test_brief_lock_is_waited_out(void)
+{
+    Cartridge cartridge;
+    load(&cartridge, TYPE_MBC1_RAM_BATTERY, RAM_CODE_8K);
+    cartridge.ram[0] = 0x42;
+
+    uint8_t old = 0x19;
+    test_write_file(save_path, &old, 1);
+    HANDLE file = CreateFileA(save_path, GENERIC_READ, FILE_SHARE_READ,
+                              NULL, OPEN_EXISTING, 0, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+    HANDLE thread = CreateThread(NULL, 0, close_later, file, 0, NULL);
+    assert(thread != NULL);
+
+    assert(cartridge_save_battery(&cartridge, save_path, 0) ==
+           CARTRIDGE_SAVE_OK);
+    assert(WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0);
+    assert(CloseHandle(thread));
+
+    cartridge.ram[0] = 0;
+    assert(cartridge_load_battery(&cartridge, save_path, 0) ==
+           CARTRIDGE_SAVE_OK);
+    assert(cartridge.ram[0] == 0x42);
+    assert(remove(save_path) == 0);
+    cartridge_destroy(&cartridge);
+}
+#endif
+
 int main(void)
 {
     test_which_cartridges_have_a_battery();
     test_ram_round_trip();
     test_failed_replace_preserves_temporary();
+#ifdef _WIN32
+    test_brief_lock_is_waited_out();
+#endif
     test_failed_loads_change_nothing();
     test_mbc2_save();
     test_mbc3_without_a_clock_has_no_footer();

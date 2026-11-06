@@ -82,6 +82,11 @@ Emulator *emulator_create(void);
  * @param emulator Emulator instance.
  * @param path Path to the ROM file.
  *
+ * Paths here and in the battery calls are opened with fopen(), so they are
+ * in the process code page. That is UTF-8 on Linux and macOS, and on
+ * Windows for programs linked with windows/utf8.manifest, as every program
+ * this makefile builds is.
+ *
  * A successful load starts a new machine state and resets CPU, Memory,
  * Timer, Serial and the cycle counter.
  * A failed load leaves the currently loaded ROM unchanged.

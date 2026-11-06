@@ -2,8 +2,12 @@
  * SDL2 front end: shows the LCD picture in a window, turns the keyboard
  * into Game Boy buttons and runs the machine at the real frame rate.
  *
- * Usage: gameboy-sdl <rom> [--scale N] [--gray] [--frames N] [--no-save]
+ * Usage: gameboy-sdl [<rom>] [--scale N] [--gray] [--frames N] [--no-save]
  *                    [--mute]
+ *
+ * Without a ROM the window waits for one: drop a ROM file on it. A ROM
+ * dropped while a game runs replaces it, after the old game's battery save
+ * is written.
  *
  *   --scale N   window size as a multiple of 160x144 (default 4)
  *   --gray      grayscale instead of the classic green palette
@@ -23,10 +27,15 @@
  * Keys: arrows = D-pad, Z = A, X = B, Enter = Start, Right Shift or
  * Backspace = Select, Escape = quit.
  *
+ * Errors go to stderr and to a message box: on Windows the front end is a
+ * GUI program with no console, so stderr is lost there.
+ *
  * Only the emulator.h interface is used; SDL stays out of the core.
  */
 
 #include <errno.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,7 +159,25 @@ static int parse_options(int argc, char **argv, Options *options)
         }
     }
 
-    return options->rom != NULL;
+    return 1;
+}
+
+static void report(SDL_Window *window, SDL_PRINTF_FORMAT_STRING const char *format,
+                   ...) SDL_PRINTF_VARARG_FUNC(2);
+
+/* Tells the player about an error, on stderr and in a message box that
+ * waits to be closed. `window` is the box's parent, or NULL. */
+static void report(SDL_Window *window, const char *format, ...)
+{
+    char message[1024];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+
+    fprintf(stderr, "%s\n", message);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Game Boy", message, window);
 }
 
 static const char *base_name(const char *path)
@@ -203,15 +230,115 @@ static int save_path_for(const char *rom, char *out, size_t capacity)
     return 1;
 }
 
-static void save_battery(Emulator *emulator, const char *save_path)
+/*
+ * Writes the battery save. A failure is shown in a box the first time, so
+ * the player knows the game is not being kept, and for the last save of a
+ * game, which nothing will retry. Later periodic failures go to stderr.
+ */
+static void save_battery(Emulator *emulator, const char *save_path,
+                         SDL_Window *window, bool last)
 {
+    static bool warned = false;
     EmulatorStatus status = emulator_save_battery(
         emulator, save_path, (uint64_t)time(NULL)
     );
 
-    if (status != EMULATOR_OK) {
+    if (status == EMULATOR_OK) {
+        return;
+    }
+
+    if (last || !warned) {
+        warned = true;
+        report(window, "Could not write %s: %s", save_path,
+               emulator_status_string(status));
+    } else {
         fprintf(stderr, "Could not write %s: %s\n", save_path,
                 emulator_status_string(status));
+    }
+}
+
+/* The game in the machine and its battery save. */
+typedef struct Game {
+    bool loaded;
+    bool saving;            /* save_path is loaded from and written to */
+    char save_path[SAVE_PATH_CAPACITY];
+} Game;
+
+/*
+ * Puts `rom` in the machine and picks up the battery save the last session
+ * left. If the ROM does not load, the machine and `game` keep the game they
+ * had.
+ */
+static bool load_game(Emulator *emulator, Game *game, const char *rom,
+                      const Options *options, SDL_Window *window)
+{
+    EmulatorStatus status = emulator_load_rom(emulator, rom);
+
+    if (status != EMULATOR_OK) {
+        uint8_t type;
+
+        if (emulator_get_unsupported_cartridge_type(emulator, &type)) {
+            report(window, "Failed to load ROM %s: %s, header type 0x%02X",
+                   rom, emulator_status_string(status), (unsigned)type);
+        } else {
+            report(window, "Failed to load ROM %s: %s", rom,
+                   emulator_status_string(status));
+        }
+
+        return false;
+    }
+
+    game->loaded = true;
+    game->saving = false;
+
+    if (!options->save || !emulator_has_battery(emulator)) {
+        return true;
+    }
+
+    if (!save_path_for(rom, game->save_path, sizeof(game->save_path))) {
+        report(window, "ROM path too long for a save file: the game will "
+               "not be saved");
+        return true;
+    }
+
+    status = emulator_load_battery(emulator, game->save_path,
+                                   (uint64_t)time(NULL));
+
+    if (status != EMULATOR_OK && status != EMULATOR_NO_SAVE_FILE) {
+        report(window, "Could not load %s: %s; not saving over it",
+               game->save_path, emulator_status_string(status));
+        return true;
+    }
+
+    game->saving = true;
+
+    return true;
+}
+
+static void set_title(SDL_Window *window, const char *rom)
+{
+    char title[256];
+
+    if (rom == NULL) {
+        SDL_SetWindowTitle(window, "Game Boy - drop a ROM file here");
+        return;
+    }
+
+    snprintf(title, sizeof(title), "Game Boy - %s", base_name(rom));
+    SDL_SetWindowTitle(window, title);
+}
+
+/* A ROM dropped on the window. The old game's battery is written first, so
+ * its progress is kept whether or not the new ROM loads. */
+static void change_game(Emulator *emulator, Game *game, const char *rom,
+                        const Options *options, SDL_Window *window)
+{
+    if (game->saving) {
+        save_battery(emulator, game->save_path, window, true);
+    }
+
+    if (load_game(emulator, game, rom, options, window)) {
+        set_title(window, rom);
     }
 }
 
@@ -328,24 +455,22 @@ static int run(
     Emulator *emulator,
     const Options *options,
     Audio *audio,
-    const char *save_path
+    Game *game
 )
 {
-    char title[256];
-
-    snprintf(title, sizeof(title), "Game Boy - %s", base_name(options->rom));
-
     SDL_Window *window = SDL_CreateWindow(
-        title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        "Game Boy", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         (int)(EMULATOR_SCREEN_WIDTH * options->scale),
         (int)(EMULATOR_SCREEN_HEIGHT * options->scale),
         SDL_WINDOW_RESIZABLE
     );
 
     if (window == NULL) {
-        fprintf(stderr, "Could not create a window: %s\n", SDL_GetError());
+        report(NULL, "Could not create a window: %s", SDL_GetError());
         return 1;
     }
+
+    set_title(window, game->loaded ? options->rom : NULL);
 
     SDL_Renderer *renderer = SDL_CreateRenderer(
         window, -1, SDL_RENDERER_ACCELERATED
@@ -357,16 +482,18 @@ static int run(
     }
 
     if (renderer == NULL) {
-        fprintf(stderr, "Could not create a renderer: %s\n", SDL_GetError());
+        report(window, "Could not create a renderer: %s", SDL_GetError());
         SDL_DestroyWindow(window);
         return 1;
     }
 
     /* Sharp pixels, and the picture keeps its shape when the window is
-     * resized. */
+     * resized. It grows in whole steps, so every Game Boy pixel is the same
+     * size; the rest of the window is a border. */
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_RenderSetLogicalSize(renderer, EMULATOR_SCREEN_WIDTH,
                              EMULATOR_SCREEN_HEIGHT);
+    SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 
     SDL_Texture *texture = SDL_CreateTexture(
         renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
@@ -374,7 +501,7 @@ static int run(
     );
 
     if (texture == NULL) {
-        fprintf(stderr, "Could not create a texture: %s\n", SDL_GetError());
+        report(window, "Could not create a texture: %s", SDL_GetError());
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         return 1;
@@ -393,9 +520,17 @@ static int run(
     while (running) {
         SDL_Event event;
 
+        /* With no game there is nothing to run: sleep until an event. */
+        if (!game->loaded) {
+            SDL_WaitEvent(NULL);
+        }
+
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
+            } else if (event.type == SDL_DROPFILE) {
+                change_game(emulator, game, event.drop.file, options, window);
+                SDL_free(event.drop.file);
             } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
                 if (event.key.keysym.sym == SDLK_ESCAPE) {
                     running = 0;
@@ -412,6 +547,12 @@ static int run(
             }
         }
 
+        if (!game->loaded) {
+            SDL_RenderClear(renderer);
+            SDL_RenderPresent(renderer);
+            continue;
+        }
+
         emulator_set_buttons(emulator, pressed);
 
         EmulatorStatus status = emulator_run_frame(emulator);
@@ -420,22 +561,22 @@ static int run(
         if (status != EMULATOR_OK && status != EMULATOR_STALLED) {
             EmulatorFault fault;
 
-            fprintf(stderr, "Emulation stopped: %s",
-                    emulator_status_string(status));
-
             if (emulator_get_fault(emulator, &fault)) {
-                fprintf(stderr, " 0x%02X at PC=0x%04X",
-                        (unsigned)fault.opcode, (unsigned)fault.pc);
+                report(window, "Emulation stopped: %s 0x%02X at PC=0x%04X",
+                       emulator_status_string(status),
+                       (unsigned)fault.opcode, (unsigned)fault.pc);
+            } else {
+                report(window, "Emulation stopped: %s",
+                       emulator_status_string(status));
             }
 
-            fputc('\n', stderr);
             exit_code = 1;
             break;
         }
 
-        if (save_path != NULL &&
+        if (game->saving &&
             SDL_GetTicks() - last_save >= SAVE_INTERVAL_MS) {
-            save_battery(emulator, save_path);
+            save_battery(emulator, game->save_path, window, false);
             last_save = SDL_GetTicks();
         }
 
@@ -480,8 +621,8 @@ static int run(
         wait_until(next_frame);
     }
 
-    if (save_path != NULL) {
-        save_battery(emulator, save_path);
+    if (game->saving) {
+        save_battery(emulator, game->save_path, window, true);
     }
 
     SDL_DestroyTexture(texture);
@@ -496,58 +637,34 @@ int main(int argc, char **argv)
     Options options;
 
     if (!parse_options(argc, argv, &options)) {
-        fprintf(stderr,
-                "Usage: %s <rom> [--scale N] [--gray] [--frames N] [--no-save]\n",
-                argv[0]);
+        report(NULL, "Usage: %s [<rom>] [--scale N] [--gray] [--frames N] "
+               "[--no-save] [--mute]", argv[0]);
         return 1;
     }
 
     Emulator *emulator = emulator_create();
 
     if (emulator == NULL) {
-        fprintf(stderr, "Failed to create emulator\n");
+        report(NULL, "Failed to create emulator");
         return 1;
     }
 
-    EmulatorStatus status = emulator_load_rom(emulator, options.rom);
+    Game game = { 0 };
 
-    if (status != EMULATOR_OK) {
-        uint8_t cartridge_type;
-
-        fprintf(stderr, "Failed to load ROM %s: %s", options.rom,
-                emulator_status_string(status));
-
-        if (emulator_get_unsupported_cartridge_type(emulator,
-                                                    &cartridge_type)) {
-            fprintf(stderr, ", header type 0x%02X", (unsigned)cartridge_type);
-        }
-
-        fputc('\n', stderr);
+    if (options.rom != NULL &&
+        !load_game(emulator, &game, options.rom, &options, NULL)) {
         emulator_destroy(emulator);
         return 1;
     }
 
-    /* Pick up the battery save left by the last session, if any. */
-    char save_path[SAVE_PATH_CAPACITY];
-    const char *save = NULL;
-
-    if (options.save && emulator_has_battery(emulator)) {
-        if (!save_path_for(options.rom, save_path, sizeof(save_path))) {
-            fprintf(stderr, "ROM path too long for a save file\n");
-        } else {
-            save = save_path;
-            status = emulator_load_battery(emulator, save, (uint64_t)time(NULL));
-
-            if (status != EMULATOR_OK && status != EMULATOR_NO_SAVE_FILE) {
-                fprintf(stderr, "Could not load %s: %s; not saving over it\n",
-                        save, emulator_status_string(status));
-                save = NULL;
-            }
-        }
-    }
+    /* Windows stretches the window of a program that does not handle display
+     * scaling itself, which blurs the picture at 125% or 150%. This makes
+     * SDL handle it, with window sizes in scaled points, so the window
+     * still has the same size on the screen. */
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "Could not start SDL: %s\n", SDL_GetError());
+        report(NULL, "Could not start SDL: %s", SDL_GetError());
         emulator_destroy(emulator);
         return 1;
     }
@@ -558,7 +675,7 @@ int main(int argc, char **argv)
         audio_open(&audio, emulator);
     }
 
-    int exit_code = run(emulator, &options, &audio, save);
+    int exit_code = run(emulator, &options, &audio, &game);
 
     audio_close(&audio);
     SDL_Quit();

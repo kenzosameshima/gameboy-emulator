@@ -43,6 +43,9 @@ endif
 # MinGW and MSYS2 append .exe to executables.
 ifeq ($(OS),Windows_NT)
 EXE = .exe
+# Every program is linked with a manifest that switches it to the UTF-8
+# code page, so the char paths the core opens are UTF-8 there too.
+WIN_RES = $(BUILD)/utf8_manifest.o
 endif
 
 BUILD = build
@@ -117,28 +120,35 @@ ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb \
 all: $(GAMEBOY)
 
 
-$(GAMEBOY): $(BUILD)/src/main.o $(CORE_LIB)
+$(GAMEBOY): $(BUILD)/src/main.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
-$(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB)
+$(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
-$(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB)
+$(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
 $(BUILD)/tests/test_sdl_audio.o: CPPFLAGS += $(SDL_CFLAGS)
-$(BUILD)/tests/test_sdl_audio$(EXE): $(BUILD)/tests/test_sdl_audio.o $(CORE_LIB)
+$(BUILD)/tests/test_sdl_audio$(EXE): $(BUILD)/tests/test_sdl_audio.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ $(SDL_LIBS) -o $@
 
 # SDL include flags apply to the front end only.
 $(BUILD)/frontend/sdl_main.o: CPPFLAGS += $(SDL_CFLAGS)
 
 
-$(SDL_FRONTEND): $(BUILD)/frontend/sdl_main.o $(CORE_LIB)
+$(SDL_FRONTEND): $(BUILD)/frontend/sdl_main.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ $(SDL_LIBS) -o $@
+
+
+# The manifest as resource 1 of type 24 (RT_MANIFEST). The linker drops
+# MinGW's default manifest in its favour.
+$(WIN_RES): windows/utf8.manifest
+	@mkdir -p $(dir $@)
+	echo '1 24 "$<"' | windres -o $@
 
 
 sdl:
@@ -154,7 +164,7 @@ $(CORE_LIB): $(CORE_OBJ)
 
 
 # Tests run from the repository root: they read opcodes.json and roms/.
-$(BUILD)/tests/%$(EXE): $(BUILD)/tests/%.o $(CORE_LIB)
+$(BUILD)/tests/%$(EXE): $(BUILD)/tests/%.o $(CORE_LIB) $(WIN_RES)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
