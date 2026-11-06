@@ -449,6 +449,8 @@ static unsigned render_background(
              * dots before it, so the comparison runs over those too.
              */
             unsigned first = x == 0 ? WINDOW_X_OFFSET : 0;
+            bool running = window_started;
+            bool blank_pixel = false;
 
             for (unsigned back = first + 1; back-- > 0 && !window_started;) {
                 unsigned at = dot - back;
@@ -466,6 +468,19 @@ static unsigned render_background(
                     dots[x] = dot + WINDOW_START_DOTS;
                     stall = WINDOW_START_DOTS;
                 }
+            }
+
+            /*
+             * WX matching the pixel counter while the window is already
+             * running, at a boundary between its tiles, puts a blank pixel in
+             * and pushes the rest of the window 1 pixel to the right.
+             */
+            if (running && window_started &&
+                ppu_register_at(ppu, PPU_LOGGED_WX, dot - WX_COMPARE_LAG) ==
+                    x + WINDOW_X_OFFSET &&
+                ((int)x - window_start) % 8 == 0) {
+                window_start += 1;
+                blank_pixel = true;
             }
 
             if (window_started) {
@@ -492,8 +507,10 @@ static unsigned render_background(
 
                 unsigned bit = 7 - column % 8;
 
-                colors[x] = (uint8_t)((((window_high >> bit) & 1) << 1) |
-                                      ((window_low >> bit) & 1));
+                colors[x] = (uint8_t)(blank_pixel
+                    ? 0
+                    : (((window_high >> bit) & 1) << 1) |
+                      ((window_low >> bit) & 1));
             }
         }
 
@@ -512,6 +529,16 @@ static unsigned render_background(
     }
 
     return window_starts;
+}
+
+/*
+ * The BG and OBJ enable bits of LCDC are read at the pixel's own dot, except
+ * for the first pixel of the line, which reads them 1 dot later. (The palettes
+ * are not affected.) Fitted to m3_lcdc_bg_en_change and m3_lcdc_obj_en_change.
+ */
+static unsigned enable_delay(unsigned x)
+{
+    return x == 0 ? 1 : 0;
 }
 
 static void render_sprites(
@@ -574,7 +601,8 @@ static void render_sprites(
             /* The OBJ layer and the palette are those at the pixel's dot. */
             unsigned dot = dots[x];
 
-            if ((ppu_register_at(ppu, PPU_LOGGED_LCDC, dot) &
+            if ((ppu_register_at(ppu, PPU_LOGGED_LCDC,
+                                 dot + enable_delay((unsigned)x)) &
                  PPU_LCDC_OBJ_ENABLE) == 0) {
                 continue;
             }
@@ -637,7 +665,8 @@ void ppu_render_scanline(Ppu *ppu)
     for (unsigned x = 0; x < PPU_SCREEN_WIDTH; x++) {
         unsigned dot = dots[x];
 
-        line[x] = (ppu_register_at(ppu, PPU_LOGGED_LCDC, dot) &
+        line[x] = (ppu_register_at(ppu, PPU_LOGGED_LCDC,
+                                   dot + enable_delay(x)) &
                    PPU_LCDC_BG_ENABLE) != 0
             ? palette_shade(
                 ppu_register_at(ppu, PPU_LOGGED_BGP, dot),
