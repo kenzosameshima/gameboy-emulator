@@ -865,6 +865,46 @@ static void test_wx_below_seven_matches_before_the_first_pixel(void)
 }
 
 /*
+ * Starting the window restarts the fetcher, so its pixels come out 6 dots
+ * later than the background's would: pixel x at dot 98 + x for WX 7. A BGP
+ * write in the M-cycle starting at dot 100 glitches at dot 101, which is
+ * pixel 3, and holds from dot 102.
+ */
+static void test_window_pixels_start_6_dots_late(void)
+{
+    window_setup(7);
+
+    run_to(1, 100);
+    ppu_write(&ppu, PPU_BGP_ADDRESS, 0x00);     /* every color is shade 0 */
+    finish_frame();
+
+    assert(pixel(2, 1) == 2);
+    assert(pixel(3, 1) == 2);                   /* the ORed glitch dot */
+    assert(pixel(4, 1) == 0);
+}
+
+/*
+ * The window's tile number is read 6 dots before the tile's first pixel with
+ * the map select as it is 1 dot after that. WX 7 puts tile 0's first pixel at
+ * dot 98 (read at 93) and tile 1's at dot 106 (read at 101); an LCDC write in
+ * the M-cycle starting at dot 96 takes hold at dot 98, between the two.
+ */
+static void test_window_map_select_written_during_a_line(void)
+{
+    window_setup(7);
+
+    run_to(1, 96);
+    ppu_write(&ppu, PPU_LCDC_ADDRESS,
+              (uint8_t)(LCD_ON | BG_ON | TILES_UNSIGNED | WINDOW_ON));
+    finish_frame();
+
+    assert(pixel(0, 1) == 2);                   /* window map 9C00, tile 2 */
+    assert(pixel(7, 1) == 2);
+    assert(pixel(8, 1) == 1);                   /* window map 9800, tile 1 */
+    assert(pixel(16, 1) == 1);
+}
+
+/*
  * The boot ROM leaves the logo from the cartridge header in tiles 1 to 24,
  * with only the low bit plane set and each row twice, the (R) symbol in tile
  * 25, and the tile map rows that show them. The bytes are the well known
@@ -935,6 +975,8 @@ int main(void)
     test_tile_data_select_written_during_a_line();
     test_wx_written_before_the_window_starts();
     test_wx_below_seven_matches_before_the_first_pixel();
+    test_window_pixels_start_6_dots_late();
+    test_window_map_select_written_during_a_line();
     test_boot_vram();
 
     printf("PPU rendering tests passed!\n");

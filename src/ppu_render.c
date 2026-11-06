@@ -54,35 +54,6 @@ static uint8_t palette_shade(uint8_t palette, uint8_t color)
     return (uint8_t)((palette >> (color * 2)) & 0x03);
 }
 
-/* Tile data for a background or window tile number. */
-static const uint8_t *background_tile(
-    const Ppu *ppu,
-    uint8_t lcdc,
-    uint8_t number
-)
-{
-    if ((lcdc & PPU_LCDC_TILE_DATA_UNSIGNED) != 0) {
-        return &ppu->vram[(size_t)number * TILE_BYTES];
-    }
-
-    return &ppu->vram[SIGNED_TILE_BASE + (int)(int8_t)number * TILE_BYTES];
-}
-
-static uint8_t tilemap_pixel(
-    const Ppu *ppu,
-    uint8_t lcdc,
-    size_t map_offset,
-    unsigned x,
-    unsigned y
-)
-{
-    uint8_t number = ppu->vram[
-        map_offset + (y / 8) * TILEMAP_COLUMNS + (x / 8)
-    ];
-
-    return tile_pixel(background_tile(ppu, lcdc, number), y % 8, x % 8);
-}
-
 static bool window_visible(const Ppu *ppu, uint8_t lcdc)
 {
     return (lcdc & PPU_LCDC_WINDOW_ENABLE) != 0 &&
@@ -233,7 +204,18 @@ enum {
      * mealybug m3_lcdc_bg_map_change and m3_lcdc_tile_sel_change pictures.
      */
     MAP_SELECT_DELAY = 1,
-    TILE_SELECT_DELAY = 1
+    TILE_SELECT_DELAY = 1,
+
+    /*
+     * Starting the window restarts the fetcher: its first pixel and all the
+     * ones after come out this many dots later. The window's tile number and
+     * bytes are read this many dots before the tile's first pixel. Fitted to
+     * the mealybug m3_window_timing and m3_lcdc_*_win_change pictures.
+     */
+    WINDOW_START_DOTS = 6,
+    WINDOW_NUMBER_LEAD = 6,
+    WINDOW_LOW_LEAD = 6,
+    WINDOW_HIGH_LEAD = 4
 };
 
 typedef struct Fetcher {
@@ -292,6 +274,37 @@ static void fetch_step(const Ppu *ppu, Fetcher *fetcher, unsigned dot)
 }
 
 /*
+ * Reads one row of window tile `tile`, whose first pixel comes out at `dot`:
+ * the number, the low byte and the high byte at their leads before it, each
+ * with the registers as they are then.
+ */
+static void fetch_window_row(
+    const Ppu *ppu,
+    unsigned tile,
+    unsigned dot,
+    uint8_t *low,
+    uint8_t *high
+)
+{
+    unsigned row = ppu->window_line;
+    uint8_t number_lcdc = ppu_register_at(
+        ppu, PPU_LOGGED_LCDC, dot - WINDOW_NUMBER_LEAD + MAP_SELECT_DELAY);
+    size_t map =
+        (number_lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
+            ? TILEMAP_HIGH_OFFSET
+            : TILEMAP_LOW_OFFSET;
+    uint8_t number =
+        ppu->vram[map + (row / 8) * TILEMAP_COLUMNS + (tile & (TILEMAP_COLUMNS - 1))];
+
+    *low = ppu->vram[background_row_address(
+        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_LOW_LEAD + TILE_SELECT_DELAY),
+        number, row % 8, 0)];
+    *high = ppu->vram[background_row_address(
+        ppu_register_at(ppu, PPU_LOGGED_LCDC, dot - WINDOW_HIGH_LEAD + TILE_SELECT_DELAY),
+        number, row % 8, 1)];
+}
+
+/*
  * Runs the fetcher and the FIFO over the line. Fills `colors` with the
  * background (or window) color number of each pixel and `dots` with the dot
  * each one comes out at. Returns whether the window was drawn.
@@ -319,10 +332,9 @@ static bool render_background(
     bool window_started = false;
     bool window_drawn = false;
     int window_start = 0;
-    size_t window_map =
-        (lcdc & PPU_LCDC_WINDOW_MAP_HIGH) != 0
-            ? TILEMAP_HIGH_OFFSET
-            : TILEMAP_LOW_OFFSET;
+    unsigned window_tile = (unsigned)-1;
+    uint8_t window_low = 0;
+    uint8_t window_high = 0;
 
     for (unsigned dot = DRAW_START_DOT + FETCH_DOTS;; dot++) {
         if (stall > 0) {
@@ -390,17 +402,24 @@ static bool render_background(
                     wx == x + WINDOW_X_OFFSET - back) {
                     window_started = true;
                     window_start = (int)wx - WINDOW_X_OFFSET;
+                    dots[x] = dot + WINDOW_START_DOTS;
+                    stall = WINDOW_START_DOTS;
                 }
             }
 
             if (window_started && (at_lcdc & PPU_LCDC_WINDOW_ENABLE) != 0) {
-                colors[x] = tilemap_pixel(
-                    ppu,
-                    lcdc,
-                    window_map,
-                    (unsigned)((int)x - window_start),
-                    ppu->window_line
-                );
+                unsigned column = (unsigned)((int)x - window_start);
+
+                if (column / 8 != window_tile) {
+                    window_tile = column / 8;
+                    fetch_window_row(ppu, window_tile, dots[x], &window_low,
+                                     &window_high);
+                }
+
+                unsigned bit = 7 - column % 8;
+
+                colors[x] = (uint8_t)((((window_high >> bit) & 1) << 1) |
+                                      ((window_low >> bit) & 1));
                 window_drawn = true;
             }
         }
@@ -490,10 +509,10 @@ void ppu_render_scanline(Ppu *ppu)
     }
 
     /*
-     * The window's map and tiles and the sprites are those at the start of
-     * drawing; the background tiles are read as the fetcher gets to them, and
-     * the BG and OBJ enable bits, the palettes and what starts the window (WX,
-     * the window enable bit) are those at each pixel's own dot.
+     * The sprites are those at the start of drawing; the background and window
+     * tiles are read as the fetcher gets to them, and the BG and OBJ enable
+     * bits, the palettes and what starts the window (WX, the window enable
+     * bit) are those at each pixel's own dot.
      */
     uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];
