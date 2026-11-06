@@ -67,9 +67,14 @@ static void test_overflow_timeline(void)
     assert(!irq());
 
     /* Cycle B: reloaded, and the interrupt is requested. */
+    interrupts.late = 0;
     m_cycles(1);
     assert(tima() == 0xAB);
     assert(irq());
+
+    /* The request falls late in the cycle: a CPU in HALT sees it a cycle
+     * later than a running one. */
+    assert((interrupts.late & INTERRUPT_TIMER) != 0);
 }
 
 static void test_write_to_tima_in_cycle_a_cancels_the_reload(void)

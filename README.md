@@ -1,6 +1,6 @@
 # Game Boy Emulator Core
 
-An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA, a joypad and an APU (sound), and it passes Blargg's CPU instruction, memory timing and sound test ROMs, the dmg-acid2 picture test and all 94 DMG Mooneye acceptance ROMs.
+An incremental C23 Game Boy emulator core. It has a complete SM83 CPU, a Bus, Memory, a Cartridge with ROM-only, MBC1, MBC2, MBC3 and MBC5 mappers, interrupts, a Timer, a Serial port, a PPU, OAM DMA, a joypad and an APU (sound), and it passes Blargg's CPU instruction, memory timing, sound, `halt_bug` and `instr_timing` test ROMs, the dmg-acid2 picture test, all 94 DMG Mooneye acceptance ROMs, and 475 of the 513 gbmicrotest ROMs that were checked on a real DMG.
 
 The core is headless: the PPU draws into a framebuffer that a front end reads with `emulator_framebuffer()`, and the front end reports held buttons with `emulator_set_buttons()`. `frontend/sdl_main.c` is such a front end (SDL2, built with `make sdl`), so Tetris and Pokémon Red can be played with sound. The APU queues mixed stereo frames at a rate the front end chooses (`emulator_set_audio_sample_rate()`, `emulator_take_audio()`). Test ROMs run because they report their results through the serial port, and `tools/frame_dump` saves the screen as a PNG, optionally with scripted button presses.
 
@@ -102,6 +102,9 @@ HALT behavior distinguishes:
 - CPU halted without pending interrupt.
 - HALT wake-up when an interrupt is pending but IME is disabled: HALT ends with no delay of its own and the next instruction runs at once.
 - Direct interrupt service when IME is enabled.
+- The HALT bug: a HALT executed with an enabled interrupt already pending does not halt. With IME off the byte after it is read twice (PC is not incremented for the next fetch); with IME on, or turning on through an `EI` right before the HALT, the interrupt is dispatched next and pushes the HALT's own address, so the HALT runs again after `RETI`.
+
+A CPU waiting in HALT samples the interrupt flags earlier in an M-cycle than one between instructions, so a request that falls late in a cycle is noticed by it one cycle later. Requests carry that: `interrupts_request_late()` marks the Timer overflow and the mode 2 STAT pulse, and a halted CPU ignores a marked source for the first cycle (`InterruptRegisters.late`, cleared by the CPU as each cycle begins). The mode 0 STAT request is marked when it begins in the last 2 dots of its cycle, which depends on SCX. The gbmicrotest HALT ROMs and Mooneye's `intr_1_2` and `intr_2` ROMs need exactly this split.
 
 `EI` uses delayed IME enable semantics, and an `EI` executed while an enable is already pending does not push it back. `DI` cancels IME and a pending enable. `RETI` restores PC from the stack and enables IME.
 
@@ -126,9 +129,14 @@ Registers: SB `0xFF01` and SC `0xFF02`. With no link partner, a transfer started
 The picture processing unit (`ppu.c`, `ppu_render.c`) owns VRAM, OAM, the LCD registers and the framebuffer.
 
 - Mode state machine on the T-cycle clock: 456 dots per line, 154 lines, OAM scan (80 dots), drawing, HBlank, then VBlank on lines 144-153. Drawing lasts 172 dots plus `SCX mod 8` plus, when sprites are on the line, the sum of their penalties minus 3 (6 dots per sprite with X below 168, and `max(0, 5 - (X + SCX) mod 8)` more for the first sprite over each 8-pixel background tile), which moves when HBlank starts; the rule was fitted to and verified by the Mooneye sprite timing ROM. `emulator_frame_count()` counts frames at VBlank entry.
-- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking). The OAM source also fires when line 144 starts. `LY` reads the next line from dot 452, while the `LY = LYC` flag reads 0 for those 4 dots and is recomputed when the line starts; the flag and the STAT line keep their values while the LCD is off.
+- VBlank interrupt at line 144, and the STAT interrupt with LYC, HBlank, VBlank and OAM sources ORed into one line that requests the interrupt only when it rises (STAT blocking). The OAM source is a pulse, not a level: it is high only for the last M-cycle of the line before the one it announces (including line 144), or for the first M-cycle of line 0, so enabling it while a line is being scanned does nothing. `LY` reads the next line from dot 452, while the `LY = LYC` flag reads 0 for those 4 dots and is recomputed when the line starts; the flag and the STAT line keep their values while the LCD is off.
+- The DMG's STAT write glitch: for the cycle of a write to `STAT` every enable bit reads as set, so the write requests the interrupt when the PPU is in HBlank or VBlank, in a mode 2 pulse, or `LY = LYC`, and the line was low. The first line after the LCD is switched on reads as mode 0 but has had no HBlank, so it does not count as one.
+- Line 153: `LY` reads 153 only for the 4 dots at the end of line 152 and 0 from the first dot of line 153; the `LY = LYC` comparison uses 153 for 4 dots, nothing for the next 4, then 0, so `LYC = 0` raises its interrupt on line 153; `STAT` reads mode 0 in the last M-cycle of the line.
+- Boot state: a cartridge starts with the PPU in VBlank at dot 398 of line 153, 58 dots before the first frame (`ppu_enter_boot_phase()`; the two dots past a whole M-cycle are the PPU's alignment to the CPU clock after the boot ROM, while switching the LCD on aligns it to a cycle), and with the VRAM the boot ROM leaves: the cartridge's logo in tiles 1 to 24, the (R) in tile 25 and the tile map rows at `9904` and `9924` (`ppu_load_boot_vram()`).
+- Mode 3 also lasts 3 dots longer on a line where the window starts, and 3 dots shorter whenever the OBJ layer is on (each sprite then adds its penalty); both are from the gbmicrotest ROMs.
 - VRAM and OAM are blocked to the CPU at slightly different dots for reads and writes (reads give `0xFF`, writes are dropped): OAM reads from dot 452 of the previous line until drawing ends, OAM writes during the scan except its last cycle and during drawing, VRAM reads from the scan's last cycle (dot 76) through drawing, and VRAM writes during drawing only. Both are open while the LCD is off. Turning the LCD off blanks the screen and rewinds to line 0; turning it on starts line 0 in mode 0 with no OAM scan.
 - Scanline renderer: background with SCX/SCY wrap, both tile data addressing modes and both tile maps, window with its own line counter and WX < 7 handling, 8x8 and 8x16 sprites with flips, both palettes and the behind-background flag, DMG sprite priority (lower X first, then OAM order) and the ten-sprites-per-line limit. Shades 0 (lightest) to 3 (darkest) are available through `emulator_framebuffer()`.
+- A line is drawn when mode 3 ends, from a log of the register writes made during it. Pixel `x` comes out at dot `92 + SCX mod 8 + x`, plus the stall of every sprite fetched at or before it. The palettes (`BGP`, `OBP0`, `OBP1`) and the BG and OBJ enable bits of `LCDC` are those in force at the pixel's own dot: a palette write takes hold 1 dot into its M-cycle and glitches for that dot, reading as the old and the new value ORed, and `LCDC` takes hold 2 dots in. The maps, scroll, window and sprites are still those at the start of drawing.
 - `OAM DMA` writes use `ppu_oam_dma_write()`, which ignores the access lock like the hardware does.
 
 ### OAM DMA
@@ -200,7 +208,10 @@ src/ppu_render.c        PPU scanline renderer
 src/dma.c               OAM DMA
 src/joypad.c            Joypad register and interrupt
 src/apu.c               Sound channels, frame sequencer, mixer and sample queue
-tools/rom_test.c        Headless test ROM runner
+tools/rom_test.c        Headless test ROM runner (serial text, Mooneye registers, cartridge RAM, gbmicrotest verdict)
+tools/screen_test.c     Runs a ROM and compares the LCD picture with a reference PNG
+tools/png_read.c        The small PNG reader screen_test uses
+tools/testroms.sh       Downloads the test ROM collection and runs a suite against its known failures
 tools/frame_dump.c      Runs a ROM and saves the LCD picture as a PNG
 tests/                  Unit and integration tests
 roms/                   Local test ROMs
@@ -316,9 +327,9 @@ The test suite includes:
 - `test_cpu_alu_exhaustive`: every 8-bit ALU, INC/DEC, rotate/shift and DAA input (plus ADD HL and SP+e8 samples) against an independent model; DAA is checked against decimal arithmetic on BCD operands.
 - `test_cpu`, `test_cpu_instructions`: register and memory wiring of INC/DEC and LD, jumps, and control behavior.
 - `test_interrupts`, `test_emulator_interrupts`: priority, service, HALT wake-up, EI, DI, RETI, and Timer-to-CPU service.
-- `test_cpu_edge_cases`: the cases the Mooneye ROMs found, as unit tests: an `EI` while an enable is pending, HALT waking with no extra cycle, interrupt dispatch when the PC push lands on `IE`, and the `IF`/`IE` register bits.
+- `test_cpu_edge_cases`: the cases the Mooneye ROMs found, as unit tests: an `EI` while an enable is pending, HALT waking with no extra cycle, the HALT bug, a late request waking a halted CPU a cycle later, interrupt dispatch when the PC push lands on `IE`, and the `IF`/`IE` register bits.
 - `test_timer_reload`: the M-cycles after a TIMA overflow, where TIMA reads 0, is reloaded, and then ignores writes while a TMA write also reaches it.
-- `test_emulator_boot_state`: what a ROM sees at its entry point, checked with real programs; so far the divider the boot ROM leaves (DIV reads 0xAB).
+- `test_emulator_boot_state`: what a ROM sees at its entry point, checked with real programs: the divider the boot ROM leaves (DIV reads 0xAB), the I/O registers, and the logo in VRAM.
 - `test_timer`, `test_emulator_timer`: registers, frequencies, falling edges, overflow reload, and IF requests.
 - `test_serial`: register masks, transfer timing, restart, and the callback. Also the transfer's alignment to the system counter, checked for several divider phases including the boot ROM's.
 - `test_cartridge`, `test_cartridge_mbc1`: loading, transactional replacement, ROM and RAM banking, and rejection of unsupported types.
@@ -328,8 +339,8 @@ The test suite includes:
 - `test_emulator_battery`: a program writes cartridge RAM, the emulator saves it, and a fresh emulator loads it and a second program reads it back.
 - `test_utf8_paths`: a ROM and a battery save named with characters outside the Windows ANSI code pages load and save through UTF-8 paths. The files are made and checked by their real names, through the UTF-16 API on Windows.
 - `test_cartridge_mbc3`: MBC3 ROM and RAM banking up to 2 MiB, and the clock latch, halt, rollover, day carry and seconds-write behaviour.
-- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line.
-- `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes.
+- `test_ppu`: line and frame timing, the mode order, VBlank and STAT interrupts (including STAT blocking), LY = LYC, VRAM and OAM access rules, and LCD on/off. Also the dot-level windows when VRAM and OAM can be read and written, `LY` advancing at dot 452 with the `LY = LYC` flag lagging, the mode 3 length with `SCX` and sprites, and the LCD-on first line. Also the mode 2 pulse, the STAT write glitch, line 153, the boot phase, the late requests, and the window's and the OBJ layer's effect on the mode 3 length.
+- `test_ppu_render`: backgrounds, scrolling and wrap, both tile addressing modes and maps, window, palettes, sprites (flips, priority, 8x16, the ten-per-line limit); expected pixels are worked out by hand from the tile bytes. Also palette and `LCDC` writes during a line (the dot where they take hold and the one-dot ORed glitch), the delay a sprite adds to its pixels, and the VRAM the boot ROM leaves.
 - `test_dma`: what OAM DMA copies and from where (ROM, VRAM, the work RAM mirror), one byte per M-cycle after a two-cycle start-up, which bus the CPU loses for a work RAM source and for a VRAM source, and restarts.
 - `test_apu`: the register read masks and boot values, power on and off, status and DAC rules, the frame sequencer's length, sweep and envelope steps (including a DIV write clocking it), the length quirks, the noise generator, the wave RAM access rules and retrigger damage, and the mixed output (duty cycles, panning, NR50, the sample queue); expected values come from the documented hardware behaviour, not from the code.
 - `test_emulator_audio`: a program plays a note and the frames come out of `emulator_take_audio()` at the requested rate, which survives loading a ROM.
@@ -364,19 +375,28 @@ make build/rom_test
 ./build/rom_test roms/mem_timing.gb 10000000
 ```
 
+Three more suites come from the [Game Boy test ROM collection](https://github.com/c-sp/game-boy-test-roms) (MIT licence), downloaded once from a fixed release into the ignored `roms/testroms/`, checked against a SHA-256 (`tools/testroms.sh`). They use test ROMs that were checked on real hardware, and each has a list of known failures that works like Mooneye's, in `tools/<suite>-expected-failures.txt`:
+
+```sh
+make microtest   # gbmicrotest: 475 of 513 pass
+make mealybug    # mealybug tearoom PPU tests: 4 of 24 pass
+make blargg      # halt_bug, instr_timing, mem_timing-2, oam_bug: 3 of 4 pass
+```
+
+`microtest` runs the gbmicrotest ROMs, which leave a verdict in high RAM (`FF82`, with the value measured and the value expected in `FF80` and `FF81`; `rom_test --microtest` prints them next to a failure). 31 of the 38 failures are visual ROMs that never write a verdict. `mealybug` and `blargg` run `screen_test`, which runs a ROM until it executes `LD B,B` (or for a number of frames) and compares the LCD picture with the screenshot of a real DMG, pixel for pixel; `--dump` saves the picture it got. The mealybug tests that fail change a register during mode 3 that the renderer still reads once at the start of drawing (scroll, window position, tile map and tile data selection, sprite size), and `oam_bug` needs the OAM bug.
+
 ## Coverage and Limitations
 
-- The PPU draws each line in one go when drawing starts, so register changes during a line apply from the next line, and the window adds no dots to drawing. The LY = 153 early-zero quirk, the STAT write quirk and the OAM bug are not modelled.
+- The PPU draws a line when mode 3 ends, and follows only the palettes and the BG and OBJ enable bits during it; a change to scroll, window position, tile map or tile data selection or sprite size during a line applies from the next one, and the window's and sprites' effect on where pixels come out is a fitted delay, not a pixel FIFO. The OAM bug is not modelled. 20 of the 24 mealybug tests and 7 gbmicrotest ROMs that give a verdict still differ.
 - Audio is DMG only, advances in whole M-cycles, and the core's output is unfiltered (the front end applies the high-pass filter). The zombie-mode envelope quirks and other behaviour that only the CGB shows are not modelled.
 - A blocked read gives `0xFF`; real hardware can return the byte the DMA is transferring on a conflicting read. The cartridge and VRAM source rules follow the DMG.
 - Only ROM-only, MBC1, MBC2, MBC3 and MBC5 cartridges. Others (MBC6, MBC7, HuC1, the camera and so on) are rejected at load time.
-- The HALT bug (HALT with IME off and an interrupt already pending) is not modelled.
 - Register power-on values are the DMG post-boot ones for the CPU registers, the divider (DIV reads 0xAB at the entry point), `P1` (0xCF), `IF` (0xE1) and the sound registers; most other I/O registers start at zero, and the unused bits of some registers other than `IF`, `TAC`, `P1`, `SC` and `STAT` read as zero rather than one.
-- Timing beyond what the Blargg and Mooneye ROMs cover is unvalidated.
+- Timing beyond what the Blargg, Mooneye, gbmicrotest and mealybug ROMs cover is unvalidated. Sub-M-cycle phases (which dot of a cycle an event falls in) are modelled only where those ROMs needed them: the late and boot-phase rules above.
 
 Passing the tests above does not imply complete Game Boy hardware compatibility.
 
 ## Development Direction
 
-1. Accuracy the ROMs do not yet check: the HALT bug, the window's effect on mode 3 length, mid-line PPU register changes and the OAM bug.
+1. A pixel FIFO and fetcher for mode 3, which the remaining mealybug tests, the gbmicrotest `hblank_int_scx*` ROMs and the sprite delays need, and the OAM bug.
 2. Colour: the CGB.

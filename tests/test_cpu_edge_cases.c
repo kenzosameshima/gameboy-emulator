@@ -4,6 +4,9 @@
  *
  *   - EI while an enable is already pending does not delay it
  *   - HALT with IME off continues at once when an interrupt is pending
+ *   - the HALT bug: HALT does not halt with an enabled interrupt already
+ *     pending, and the byte after it is read twice (or, after EI, the
+ *     interrupt returns to the HALT)
  *   - interrupt dispatch picks its vector after the high byte of PC is
  *     pushed, so a push that lands on IE can cancel or redirect it
  *   - IF reads with its upper three bits set, and IE keeps all 8 bits
@@ -109,6 +112,174 @@ static void test_halt_wakes_without_extra_cycle(TestMachine *m)
     assert(m->interrupts.interrupt_flag == INTERRUPT_TIMER);
 }
 
+static void test_halt_bug(TestMachine *m)
+{
+    /*
+     * HALT with IME off while an enabled interrupt is already pending does
+     * not halt: the byte after it is read twice, because PC is not
+     * incremented for the next opcode fetch.
+     */
+    static const uint8_t inc_twice[] = { 0x76, 0x3C, 0x00 }; /* HALT INC A */
+
+    load(m, inc_twice, sizeof(inc_twice));
+    m->interrupts.interrupt_enable = INTERRUPT_TIMER;
+    m->interrupts.interrupt_flag = INTERRUPT_TIMER;
+    m->cpu.registers.a = 0x01;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(!m->cpu.halted);
+    assert(m->cpu.registers.pc == PROGRAM_ADDRESS + 1);
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.registers.a == 0x02);
+    assert(m->cpu.registers.pc == PROGRAM_ADDRESS + 1);
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.registers.a == 0x03);
+    assert(m->cpu.registers.pc == PROGRAM_ADDRESS + 2);
+
+    /* It happens once: the next instruction is fetched normally. */
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.registers.pc == PROGRAM_ADDRESS + 3);
+
+    /* Nothing was serviced. */
+    assert(m->interrupts.interrupt_flag == INTERRUPT_TIMER);
+
+    /*
+     * With a two byte instruction after HALT the repeated opcode byte also
+     * becomes its operand: LD A,n8 loads its own opcode, 0x3E, and INC B
+     * then runs from the byte that was meant to be the operand.
+     */
+    static const uint8_t ld_a[] = { 0x76, 0x3E, 0x04 }; /* HALT LD A,04 */
+
+    load(m, ld_a, sizeof(ld_a));
+    m->interrupts.interrupt_enable = INTERRUPT_TIMER;
+    m->interrupts.interrupt_flag = INTERRUPT_TIMER;
+    m->cpu.registers.b = 0x10;
+
+    cpu_step(&m->cpu);
+    assert(cpu_step(&m->cpu) == 8);
+    assert(m->cpu.registers.a == 0x3E);
+    assert(m->cpu.registers.pc == PROGRAM_ADDRESS + 2);
+
+    cpu_step(&m->cpu);
+    assert(m->cpu.registers.b == 0x11);
+
+    /* With nothing pending HALT halts as usual and there is no bug. */
+    load(m, inc_twice, sizeof(inc_twice));
+    m->interrupts.interrupt_enable = INTERRUPT_TIMER;
+    m->interrupts.interrupt_flag = 0;
+
+    cpu_step(&m->cpu);
+    assert(m->cpu.halted);
+
+    /* A pending interrupt that is not enabled does not count. */
+    load(m, inc_twice, sizeof(inc_twice));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = INTERRUPT_TIMER;
+
+    cpu_step(&m->cpu);
+    assert(m->cpu.halted);
+}
+
+static void test_ei_halt_returns_to_halt(TestMachine *m)
+{
+    /*
+     * EI right before HALT, with an interrupt pending: IME turns on as HALT
+     * runs, so the interrupt is serviced at once, and the address it pushes
+     * is that of the HALT, which runs again after RETI.
+     */
+    static const uint8_t program[] = { 0xFB, 0x76, 0x00 }; /* EI HALT NOP */
+
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(cpu_step(&m->cpu) == 4);
+    assert(!m->cpu.halted);
+    assert(m->cpu.ime);
+
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(m->cpu.registers.pc == 0x0058);
+    assert(stack_word(m, m->cpu.registers.sp) == PROGRAM_ADDRESS + 1);
+
+    /* Without a pending interrupt, EI HALT halts normally. */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+
+    cpu_step(&m->cpu);
+    cpu_step(&m->cpu);
+    assert(m->cpu.halted);
+}
+
+static void test_late_request_wakes_halt_a_cycle_later(TestMachine *m)
+{
+    static const uint8_t program[] = { 0x76, 0x00, 0x00 }; /* HALT NOP NOP */
+
+    /*
+     * An interrupt requested late in the M-cycle that just ended is seen at
+     * once by a CPU between instructions, but a halted one samples earlier
+     * in the cycle and notices it one cycle later, with IME on or off.
+     */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    m->cpu.ime = true;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.halted);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.step_status == CPU_STEP_HALTED);
+    assert(m->cpu.halted);
+
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+    assert(m->cpu.registers.pc == 0x0058);
+
+    /* An early request is seen in the first cycle. */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    m->cpu.ime = true;
+    cpu_step(&m->cpu);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+
+    /* With IME off the wake-up is a cycle later too. */
+    load(m, program, sizeof(program));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = 0;
+    cpu_step(&m->cpu);
+
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+    assert(cpu_step(&m->cpu) == 4);
+    assert(m->cpu.halted);
+    assert(cpu_step(&m->cpu) == 4);
+    assert(!m->cpu.halted);
+    assert(m->cpu.step_status == CPU_STEP_EXECUTED);
+
+    /* A running CPU is not held back by a late request. */
+    static const uint8_t nops[] = { 0x00, 0x00 };
+
+    load(m, nops, sizeof(nops));
+    m->interrupts.interrupt_enable = INTERRUPT_SERIAL;
+    m->interrupts.interrupt_flag = INTERRUPT_SERIAL;
+    m->interrupts.late = INTERRUPT_SERIAL;
+    m->cpu.ime = true;
+    assert(cpu_step(&m->cpu) == 20);
+    assert(m->cpu.step_status == CPU_STEP_INTERRUPT_SERVICED);
+}
+
 /* Starts a dispatch with the stack where its pushes will hit IE (FFFF). */
 static void start_dispatch(TestMachine *m, uint16_t pc, uint16_t sp,
                            uint8_t enable, uint8_t flags)
@@ -200,6 +371,9 @@ int main(void)
 
     test_ei_sequence(&machine);
     test_halt_wakes_without_extra_cycle(&machine);
+    test_halt_bug(&machine);
+    test_ei_halt_returns_to_halt(&machine);
+    test_late_request_wakes_halt_a_cycle_later(&machine);
     test_dispatch_with_ie_push(&machine);
     test_if_and_ie_bits(&machine);
 

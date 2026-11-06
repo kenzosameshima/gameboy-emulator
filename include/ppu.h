@@ -65,6 +65,28 @@ typedef enum {
     PPU_MODE_DRAWING = 3
 } PpuMode;
 
+/*
+ * The registers the renderer follows while a line is being drawn: a write
+ * changes what later pixels look like, not the ones already out.
+ */
+typedef enum {
+    PPU_LOGGED_LCDC,
+    PPU_LOGGED_BGP,
+    PPU_LOGGED_OBP0,
+    PPU_LOGGED_OBP1,
+    PPU_LOGGED_COUNT
+} PpuLoggedRegister;
+
+typedef struct PpuRegisterWrite {
+    uint16_t dot;       /* the dot of the line from which `value` applies */
+    uint8_t reg;        /* a PpuLoggedRegister */
+    uint8_t value;
+} PpuRegisterWrite;
+
+enum {
+    PPU_WRITE_LOG_SIZE = 32
+};
+
 typedef struct Ppu {
     uint8_t vram[PPU_VRAM_SIZE];
     uint8_t oam[PPU_OAM_SIZE];
@@ -92,7 +114,17 @@ typedef struct Ppu {
     uint16_t drawing_end_dot;   /* dot of the line where mode 3 ends */
     bool ly_advanced;           /* LY already shows the next line (from dot 452) */
     bool pre_draw;              /* first line after LCD on, before drawing starts */
+    bool oam_pulse;             /* the mode 2 interrupt condition, high only
+                                   in the last 4 dots of the line before */
+    bool hblank_late;           /* HBlank began in the last 2 dots of its cycle */
+    uint8_t ly153_stage;        /* line 153's LYC comparison: 0 compares 153,
+                                   1 is the gap, 2 compares 0 */
     uint64_t frames;        /* completed frames since reset */
+
+    /* The logged registers at the start of the line, and the writes since. */
+    uint8_t line_registers[PPU_LOGGED_COUNT];
+    PpuRegisterWrite writes[PPU_WRITE_LOG_SIZE];
+    unsigned write_count;
 
     InterruptRegisters *interrupts;
 } Ppu;
@@ -104,12 +136,14 @@ typedef struct Ppu {
  * renderer.
  *
  * Time comes from ppu_step() in T-cycles, which are dots. Each visible
- * line is rendered in one go when drawing starts, from the registers as
- * they are at that moment, so changes made during a line apply from the
- * next one. Drawing lasts 172 dots plus SCX mod 8 plus a penalty for the
- * sprites on the line (see ppu_render.c), which moves when HBlank starts. VRAM is unreadable while drawing and OAM while scanning or
- * drawing, as on hardware: reads give 0xFF and writes are dropped, unless
- * the LCD is off.
+ * line is rendered when drawing ends. Pixel x comes out at dot 92 + SCX mod 8
+ * + x, and the palettes and the BG and OBJ enable bits are those in force at
+ * that dot, from a log of the writes made during the line; the tile maps,
+ * scroll, window and sprites are those at the start of drawing. Drawing lasts
+ * 172 dots plus SCX mod 8 plus a penalty for the window and sprites on the
+ * line (see ppu_render.c), which moves when HBlank starts. VRAM is unreadable
+ * while drawing and OAM while scanning or drawing, as on hardware: reads give
+ * 0xFF and writes are dropped, unless the LCD is off.
  *
  * Reset state is the DMG after its boot ROM: LCD on, BGP 0xFC, at the
  * start of line 0.
@@ -119,6 +153,27 @@ void ppu_init(Ppu *ppu, InterruptRegisters *interrupts);
 
 /* Back to the reset state; VRAM, OAM and the framebuffer are cleared. */
 void ppu_reset(Ppu *ppu);
+
+/*
+ * Moves a reset PPU to where the boot ROM leaves it when the cartridge starts
+ * running: in VBlank, 58 dots before the first frame, which is dot 398 of
+ * line 153. The two dots past a whole M-cycle are the PPU's alignment to the
+ * CPU clock after the boot ROM; switching the LCD on aligns it to a cycle
+ * instead. Measured with the gbmicrotest power-on and HBlank ROMs.
+ */
+void ppu_enter_boot_phase(Ppu *ppu);
+
+enum {
+    PPU_LOGO_SIZE = 48      /* the Nintendo logo in the cartridge header */
+};
+
+/*
+ * Fills VRAM the way the boot ROM leaves it: the logo from the cartridge
+ * header (0104-0133) expanded into tiles 1 to 24, the (R) symbol as tile 25,
+ * and the tile map rows at 9904 and 9924 that show them. Games that never
+ * clear VRAM, and the test ROMs that use these tiles as pictures, see it.
+ */
+void ppu_load_boot_vram(Ppu *ppu, const uint8_t logo[PPU_LOGO_SIZE]);
 
 /*
  * VRAM, OAM and the registers FF40-FF45 and FF47-FF4B. `address` must be

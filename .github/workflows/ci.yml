@@ -63,3 +63,18 @@ jobs:
 
       - name: Run the Mooneye ROMs
         run: make -j"$(nproc)" mooneye
+
+  # Test ROMs checked on a real DMG: the gbmicrotest ROMs by verdict, the
+  # mealybug and Blargg ROMs against screenshots. Known failures are listed in
+  # tools/*-expected-failures.txt; a new failure fails the job.
+  microtest:
+    name: gbmicrotest, mealybug and Blargg screens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the gbmicrotest ROMs
+        run: make -j"$(nproc)" microtest
+
+      - name: Run the mealybug and Blargg screenshot ROMs
+        run: make -j"$(nproc)" mealybug blargg

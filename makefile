@@ -81,6 +81,7 @@ CORE_LIB = $(BUILD)/libgbcore.a
 GAMEBOY = gameboy$(EXE)
 ROM_TEST = $(BUILD)/rom_test$(EXE)
 FRAME_DUMP = $(BUILD)/frame_dump$(EXE)
+SCREEN_TEST = $(BUILD)/screen_test$(EXE)
 SDL_FRONTEND = $(BUILD)/gameboy-sdl$(EXE)
 
 # The SDL front end is built on request (make sdl) and needs SDL2 and
@@ -99,7 +100,7 @@ TEST_BIN = $(TEST_SRC:tests/%.c=$(BUILD)/tests/%$(EXE))
 ALL_OBJ = $(CORE_OBJ) \
 	      $(BUILD)/src/main.o \
 	      $(BUILD)/tools/rom_test.o \
-	      $(BUILD)/tools/frame_dump.o \
+	      $(BUILD)/tools/frame_dump.o 	      $(BUILD)/tools/screen_test.o 	      $(BUILD)/tools/png_read.o \
 	      $(BUILD)/frontend/sdl_main.o \
 	      $(TEST_SRC:%.c=$(BUILD)/%.o)
 
@@ -111,7 +112,7 @@ ROM_TESTS = roms/[0-9]*.gb roms/cpu_instrs.gb roms/mem_timing.gb \
 	    roms/dmg_sound/*.gb
 
 
-.PHONY: all clean test rom-test check sdl mooneye
+.PHONY: all clean test rom-test check sdl mooneye microtest mealybug blargg
 
 # Keep object files between runs so unchanged tests are not rebuilt.
 .SECONDARY:
@@ -129,6 +130,10 @@ $(ROM_TEST): $(BUILD)/tools/rom_test.o $(CORE_LIB) $(WIN_RES)
 
 
 $(FRAME_DUMP): $(BUILD)/tools/frame_dump.o $(CORE_LIB) $(WIN_RES)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+
+$(SCREEN_TEST): $(BUILD)/tools/screen_test.o $(BUILD)/tools/png_read.o $(CORE_LIB)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 
@@ -203,6 +208,21 @@ check: test rom-test
 # network and not every ROM passes yet.
 mooneye: $(ROM_TEST)
 	tools/mooneye.sh $(ROM_TEST)
+
+
+# The gbmicrotest ROMs, checked on a real DMG. Downloads the test ROM
+# collection into roms/testroms on first use; see tools/testroms.sh.
+microtest: $(ROM_TEST)
+	tools/testroms.sh microtest $(ROM_TEST)
+
+
+# ROMs from the same collection that show their result on screen. They are
+# compared with the screenshots of a real DMG, pixel for pixel.
+mealybug: $(SCREEN_TEST)
+	tools/testroms.sh mealybug $(SCREEN_TEST)
+
+blargg: $(SCREEN_TEST)
+	tools/testroms.sh blargg $(SCREEN_TEST)
 
 
 -include $(ALL_OBJ:.o=.d)

@@ -7,7 +7,7 @@
 
 void dma_init(Dma *dma, Bus *bus, Ppu *ppu)
 {
-    dma->register_value = 0;
+    dma->register_value = 0xFF;   /* what the boot ROM leaves in FF46 */
     dma->copying = false;
     dma->active_page = 0;
     dma->copied = 0;

@@ -60,6 +60,8 @@ typedef struct {
     InterruptRegisters *interrupts;
 
     bool halted;
+    /* The HALT bug: the next opcode fetch does not increment PC. */
+    bool halt_bug;
     bool stopped;
     bool ime; /* Interrupt Master Enable. */
     uint8_t ime_enable_delay;
