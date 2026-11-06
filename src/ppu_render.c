@@ -208,51 +208,87 @@ static unsigned sprite_stalls(
  * The background fetcher and pixel FIFO.
  *
  * Drawing starts at dot 80. The fetcher reads a background tile in three
- * steps of 2 dots (tile number, low byte, high byte) and can push the 8
- * pixels into the FIFO 2 dots after that, when the FIFO is empty. The first
- * fetch of the line is thrown away and repeated, so tile 0 is pushed at dot
- * 92; every later tile is fetched while the previous one is shifted out, and
- * pushed in the dot after the last of its 8 pixels. The first SCX mod 8
- * pixels of tile 0 are shifted out without being drawn. A sprite fetch
- * freezes the fetcher and the shifter for its stall.
+ * steps of 2 dots: the tile number, then the low and the high byte of the
+ * tile's row. It can push the 8 pixels into the FIFO 2 dots after that, when
+ * the FIFO is empty. The first fetch of the line is thrown away and repeated,
+ * so tile 0 is pushed at dot 92; every later tile is fetched while the
+ * previous one is shifted out, and pushed in the dot after the last of its 8
+ * pixels. The first SCX mod 8 pixels of tile 0 are shifted out without being
+ * drawn. A sprite fetch freezes the fetcher and the shifter for its stall.
  *
- * What a fetch reads (map select, scroll, tile data select) is, for now,
- * still taken from the start of drawing.
+ * Each step reads the registers as they are at its own dot: the map select
+ * (LCDC bit 3), SCX and SCY for the tile number, the tile data select
+ * (LCDC bit 4) and SCY for each byte.
  */
 enum {
     FETCH_DOTS = 6,
-    FIFO_PIXELS = 8
+    FIFO_PIXELS = 8,
+    FETCH_NUMBER_AGE = 0,
+    FETCH_LOW_AGE = 2,
+    FETCH_HIGH_AGE = 4,
+
+    /*
+     * LCDC bit 3 (map select) is read this many dots after the tile number's
+     * step, and bit 4 (tile data select) after each byte's. Fitted to the
+     * mealybug m3_lcdc_bg_map_change and m3_lcdc_tile_sel_change pictures.
+     */
+    MAP_SELECT_DELAY = 1,
+    TILE_SELECT_DELAY = 1
 };
 
 typedef struct Fetcher {
-    unsigned tile;                       /* next tile column to fetch */
-    unsigned start;                      /* dot the fetch in progress began */
-    uint8_t data[FIFO_PIXELS];           /* its pixels */
+    unsigned tile;      /* tile column being fetched, 0 at the line's start */
+    unsigned age;       /* non-stalled dots since this fetch began */
+    uint8_t number;     /* the tile number, once read */
+    uint8_t low;
+    uint8_t high;
 } Fetcher;
 
-/* Reads the pixels of background tile `fetcher->tile` for this line. */
-static void fetch_background_tile(
-    const Ppu *ppu,
+/* VRAM offset of one row's byte of a background tile, for the given LCDC. */
+static size_t background_row_address(
     uint8_t lcdc,
-    Fetcher *fetcher,
-    unsigned dot
+    uint8_t number,
+    unsigned row,
+    unsigned byte
 )
 {
-    size_t map =
-        (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
-            ? TILEMAP_HIGH_OFFSET
-            : TILEMAP_LOW_OFFSET;
-    unsigned y = (unsigned)(ppu->ly + ppu->scy) & 0xFF;
-    unsigned column = ((ppu->scx >> 3) + fetcher->tile) & (TILEMAP_COLUMNS - 1);
-    uint8_t number = ppu->vram[map + (y / 8) * TILEMAP_COLUMNS + column];
-    const uint8_t *tile = background_tile(ppu, lcdc, number);
+    size_t tile =
+        (lcdc & PPU_LCDC_TILE_DATA_UNSIGNED) != 0
+            ? (size_t)number * TILE_BYTES
+            : (size_t)(SIGNED_TILE_BASE + (int)(int8_t)number * TILE_BYTES);
 
-    for (unsigned i = 0; i < FIFO_PIXELS; i++) {
-        fetcher->data[i] = tile_pixel(tile, y % 8, i);
+    return tile + row * 2 + byte;
+}
+
+/* Does the step of the fetch in progress that falls on this dot. */
+static void fetch_step(const Ppu *ppu, Fetcher *fetcher, unsigned dot)
+{
+    unsigned select_delay =
+        fetcher->age == FETCH_NUMBER_AGE ? MAP_SELECT_DELAY : TILE_SELECT_DELAY;
+    uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, dot + select_delay);
+    unsigned y = (unsigned)(ppu->ly +
+                            ppu_register_at(ppu, PPU_LOGGED_SCY, dot)) & 0xFF;
+
+    if (fetcher->age == FETCH_NUMBER_AGE) {
+        size_t map =
+            (lcdc & PPU_LCDC_BG_MAP_HIGH) != 0
+                ? TILEMAP_HIGH_OFFSET
+                : TILEMAP_LOW_OFFSET;
+        unsigned scx = ppu_register_at(ppu, PPU_LOGGED_SCX, dot);
+        unsigned column = ((scx >> 3) + fetcher->tile) & (TILEMAP_COLUMNS - 1);
+
+        fetcher->number = ppu->vram[map + (y / 8) * TILEMAP_COLUMNS + column];
+    } else if (fetcher->age == FETCH_LOW_AGE) {
+        fetcher->low = ppu->vram[
+            background_row_address(lcdc, fetcher->number, y % 8, 0)
+        ];
+    } else if (fetcher->age == FETCH_HIGH_AGE) {
+        fetcher->high = ppu->vram[
+            background_row_address(lcdc, fetcher->number, y % 8, 1)
+        ];
     }
 
-    fetcher->start = dot;
-    fetcher->tile++;
+    fetcher->age++;
 }
 
 /*
@@ -274,29 +310,33 @@ static bool render_background(
     unsigned head = 0;
     unsigned size = 0;
     Fetcher fetcher = {0};
-    unsigned discard = ppu->scx & 7;
+    unsigned discard =
+        ppu_register_at(ppu, PPU_LOGGED_SCX, DRAW_START_DOT) & 7;
     unsigned next_sprite = 0;
     unsigned stall = 0;
     unsigned x = 0;
-    unsigned dot = DRAW_START_DOT + FETCH_DOTS;
 
-    fetch_background_tile(ppu, lcdc, &fetcher, dot);
-
-    for (;; dot++) {
+    for (unsigned dot = DRAW_START_DOT + FETCH_DOTS;; dot++) {
         if (stall > 0) {
             stall--;
             continue;
         }
 
-        if (size == 0 && dot >= fetcher.start + FETCH_DOTS) {
+        if (size == 0 && fetcher.age >= FETCH_DOTS) {
             for (unsigned i = 0; i < FIFO_PIXELS; i++) {
-                fifo[i] = fetcher.data[i];
+                unsigned bit = 7 - i;
+
+                fifo[i] = (uint8_t)((((fetcher.high >> bit) & 1) << 1) |
+                                    ((fetcher.low >> bit) & 1));
             }
 
             head = 0;
             size = FIFO_PIXELS;
-            fetch_background_tile(ppu, lcdc, &fetcher, dot);
+            fetcher.tile++;
+            fetcher.age = 0;
         }
+
+        fetch_step(ppu, &fetcher, dot);
 
         if (size == 0) {
             continue;   /* the first tile is not ready yet */
@@ -427,9 +467,9 @@ void ppu_render_scanline(Ppu *ppu)
     }
 
     /*
-     * The maps, scroll, window and sprites are those at the start of drawing;
-     * the BG and OBJ enable bits and the palettes are those at each pixel's
-     * own dot.
+     * The window and sprites are those at the start of drawing; the background
+     * tiles are read as the fetcher gets to them, and the BG and OBJ enable
+     * bits and the palettes are those at each pixel's own dot.
      */
     uint8_t lcdc = ppu_register_at(ppu, PPU_LOGGED_LCDC, DRAW_START_DOT);
     uint8_t background_colors[PPU_SCREEN_WIDTH];
